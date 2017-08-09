@@ -188,6 +188,43 @@ def nan_omit(ar):
         ar = ar[np.where(ar[:] != '')]
     return ar
 
+
+def one_hot(ar, column):
+    npar = np.array(ar)
+    vec = npar[:, column]
+    classes = np.unique(vec)
+
+    enc = np.zeros(shape=(len(ar), len(classes)), dtype=np.float32)
+
+    for i in range(len(vec)):
+        enc[i, np.argwhere(np.array(classes[:]) == npar[i, column]).ravel()] = 1
+    for i in range(len(classes)):
+        npar = np.insert(npar, column+i+1, values=enc[:, i], axis=1)
+
+    npar = np.delete(npar, column, axis=1)
+
+    return npar
+
+
+def cross_feature(ar, class_column, feature_columns):
+    npar = np.array(ar)
+
+    vec = npar[:, class_column]
+    ft = npar[:, feature_columns].reshape((len(npar),-1))
+
+    classes = np.unique(vec)
+
+    n_features = ft.shape[1]
+
+    enc = np.zeros(shape=(len(npar), len(classes)*n_features), dtype=np.float32)
+    for i in range(len(vec)):
+        ind = np.argwhere(np.array(classes[:]) == npar[i, class_column]).ravel()
+        for j in range(n_features):
+            enc[i, (n_features*ind)+j] = npar[i, feature_columns[j]]
+
+    return enc
+
+
 def print_descriptives(ar, headers=None, desc_level=1):
     ar = np.array(ar)
     ar = ar.reshape((-1,ar.shape[-1]))
