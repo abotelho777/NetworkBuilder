@@ -381,7 +381,7 @@ class Network:
             gradients = None
         return batch_cost
 
-    def train(self, x, y, step=0.1, epochs=50, batch=10, cost_method='MSE'):
+    def train(self, x, y, step=0.1, max_epochs=50, batch=10, cost_method='MSE'):
 
         print("{:=<40}".format(''))
         print("{:^40}".format("Training Network"))
@@ -390,7 +390,7 @@ class Network:
         for i in range(1, len(self.layers)):
             structure += " -> {}n".format(self.layers[i]['n'])
         print("-{} layers: {}".format(len(self.layers), structure))
-        print("-{} epochs".format(epochs))
+        print("-{} epochs".format(max_epochs))
         print("-step size = {}".format(step))
         print("-batch size = {}".format(batch))
         print("{:=<40}".format(''))
@@ -399,7 +399,7 @@ class Network:
 
         self.step_size = step
         self.batch_size = batch
-        self.training_epochs = epochs
+        self.training_epochs = max_epochs
 
         self.__initialize(cost_method)
 
@@ -411,7 +411,9 @@ class Network:
                                                                     axis=0).reshape((1, 1, -1))
 
         train_start = time.time()
-        for e in range(epochs):
+
+        e = 1
+        while True:
             epoch_start = time.time()
 
             v = list(range(x.shape[0]))
@@ -435,8 +437,17 @@ class Network:
                     self.minimize_cost(self.cost_function).run(feed_dict=self.args)
                     cost.append(self.getCost(x[s], y[s], False))
 
-            print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e + 1), np.mean(cost),
+            if e > 1:
+                mean_last_ten = np.mean(cost[-10:])
+            else:
+                mean_last_ten = 0
+
+            print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.mean(cost),
                                                     time.time() - epoch_start))
+
+            if (0.01 < abs(np.mean(cost[-10:]) - mean_last_ten) < 0.1) or e >= max_epochs:
+                break;
+            e += 1
 
         print("{:=<40}".format(''))
         print("Total Time: {:<.1f}s".format(time.time() - train_start))
@@ -736,7 +747,7 @@ if __name__ == "__main__":
 
     net.set_max_backprop_timesteps(3)
 
-    net.train(data, labels, epochs=50, step=1e-2, batch=100, cost_method='rmse')
+    net.train(data, labels, max_epochs=50, step=1e-2, batch=100, cost_method='rmse')
 
     pred = net.predict(np.sin(np.array(range(30))*0.3).reshape((1,-1,1)))
 
