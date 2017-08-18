@@ -381,7 +381,7 @@ class Network:
             gradients = None
         return batch_cost
 
-    def train(self, x, y, step=0.1, max_epochs=50, batch=10, cost_method='MSE'):
+    def train(self, x, y, step=0.1, max_epochs=100, threshold=0.01, batch=10, cost_method='MSE'):
 
         print("{:=<40}".format(''))
         print("{:^40}".format("Training Network"))
@@ -445,7 +445,7 @@ class Network:
             print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.mean(cost),
                                                     time.time() - epoch_start))
 
-            if (0.01 < abs(np.mean(cost[-10:]) - mean_last_ten) < 0.1) or e >= max_epochs:
+            if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
                 break;
             e += 1
 
@@ -747,7 +747,7 @@ if __name__ == "__main__":
 
     net.set_max_backprop_timesteps(3)
 
-    net.train(data, labels, max_epochs=50, step=1e-2, batch=100, cost_method='rmse')
+    net.train(data, labels, max_epochs=50, step=1e-2, batch=100, cost_method='rmse', threshold=0.001)
 
     pred = net.predict(np.sin(np.array(range(30))*0.3).reshape((1,-1,1)))
 
