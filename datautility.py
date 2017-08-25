@@ -29,40 +29,30 @@ def __load_csv__(filename, max_rows=None):
         # n_lines = sum(1 for row in f_lines)
         if max_rows is not None:
             n_lines = max_rows
-        sys.stdout.write('-- loading {}...({}%)'.format(filename, 0))
+
+        output_str = '-- loading {}...({}%)'.format(filename, 0)
+        sys.stdout.write(output_str)
         sys.stdout.flush()
+        old_str = output_str
         i = 0
         for line in f_lines:
-            # s_line = line.strip()
-            # ind = s_line.find('\"')
-            # while not ind == -1:
-            #     end = s_line.find('\"', ind + 1)
-            #     if end == -1:
-            #         break
-            #     comma = s_line.find(',', ind, end)
-            #     while not comma == -1:
-            #         s_line = s_line[:comma] + '<comma>' + s_line[comma + 1:]
-            #         end = s_line.find('\"', ind + 1)
-            #         comma = s_line.find(',', comma, end)
-            #     ind = s_line.find('\"', end + 1)
-            # # split out each comma-separated value
-            # val = s_line.replace('\"','').split(',')
-            # for j in range(len(line)):
-            #     val[j] = line[j].replace('<comma>', ',')
-            #     # try converting to a number, if not, leave it
-            #     try:
-            #         val[j] = float(val[j])
-            #     except ValueError:
-            #         # do nothing constructive
-            #         pass
+            na = np.argwhere(np.array(line[:]) == '#N/A').ravel()
+            if len(na) > 0:
+                line[line.index('#N/A')] = 'nan'
+
             csvarr.append(line)
             if max_rows is not None:
                 if len(csvarr) >= max_rows:
                     break
             if not round((i / n_lines) * 100, 2) == round(((i - 1) / n_lines) * 100, 2):
-                sys.stdout.write('\r-- loading {}...({}%)'.format(filename, round((i / n_lines) * 100, 2)))
+                sys.stdout.write('\r' + (' ' * len(old_str)))
+                output_str = '\r-- loading {}...({}%)'.format(filename, round((i / n_lines) * 100, 2))
+                sys.stdout.write(output_str)
                 sys.stdout.flush()
+                old_str = output_str
+
             i += 1
+        sys.stdout.write('\r' + (' ' * len(old_str)))
         sys.stdout.write('\r-- loading {}...({}%)\n'.format(filename, 100))
         sys.stdout.flush()
 
@@ -189,30 +179,30 @@ def nan_omit(ar):
     return ar
 
 
-def one_hot(ar, column):
+def one_hot(ar, class_array, class_column):
     npar = np.array(ar)
-    vec = npar[:, column]
-    classes = np.unique(vec)
+
+    classes = class_array
 
     enc = np.zeros(shape=(len(ar), len(classes)), dtype=np.float32)
 
-    for i in range(len(vec)):
-        enc[i, np.argwhere(np.array(classes[:]) == npar[i, column]).ravel()] = 1
+    for i in range(len(npar)):
+        enc[i, np.argwhere(np.array(classes[:], dtype=str) == str(npar[i, class_column])).ravel()] = 1
     for i in range(len(classes)):
-        npar = np.insert(npar, column+i+1, values=enc[:, i], axis=1)
-
-    npar = np.delete(npar, column, axis=1)
+        npar = np.insert(npar, len(npar[0,:]), values=enc[:, i], axis=1)
 
     return npar
 
 
-def cross_feature(ar, class_column, feature_columns):
+def cross_feature(ar, class_array, class_column, feature_columns):
     npar = np.array(ar)
 
     vec = npar[:, class_column]
+
     ft = npar[:, feature_columns].reshape((len(npar),-1))
 
-    classes = np.unique(vec)
+
+    classes = np.array(class_array)
 
     n_features = ft.shape[1]
 
@@ -221,8 +211,10 @@ def cross_feature(ar, class_column, feature_columns):
         ind = np.argwhere(np.array(classes[:]) == npar[i, class_column]).ravel()
         for j in range(n_features):
             enc[i, (n_features*ind)+j] = npar[i, feature_columns[j]]
+    for i in range(len(classes)):
+        npar = np.insert(npar, len(npar[0,:]), values=enc[:, i], axis=1)
 
-    return enc
+    return npar
 
 
 def print_descriptives(ar, headers=None, desc_level=1):
@@ -244,7 +236,7 @@ def print_descriptives(ar, headers=None, desc_level=1):
             h = ''.join(list(h)[:15]) + '...'
         label = "Column {}".format(i) if headers is None else h
         dtype = ['int','float','string'][np.array(np.where(
-            np.array(['int','double precision','text'])[:] == infer_basic_type(ar[:, i], 100))).reshape((-1))[0]]
+            np.array(['int','double precision','text'])[:] == infer_basic_type(np.unique(ar[:, i]), 1000))).reshape((-1))[0]]
         label = "{} ({}):".format(label,dtype)
 
         if dtype == 'string':
