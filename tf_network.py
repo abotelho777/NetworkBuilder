@@ -510,7 +510,7 @@ class Network:
                 else:
                     self.args[self.layers[0]['z']] = x[s]
                     self.args[self.y] = y[s]
-                    self.minimize_cost(self.cost_function).run(feed_dict=self.args)
+                    self.minimize_cost.run(feed_dict=self.args)
                     cost.append(self.getCost(x[s], y[s], False))
 
             if e > 1:
