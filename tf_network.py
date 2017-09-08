@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import time
-from evaluationutility import auc
+from evaluationutility import *
 
 class Normalization:
     NONE = 'None'
@@ -490,7 +490,8 @@ class Network:
         use_validation = False
 
         if validation_labels is not None and validation_data is not None:
-            use_validation = True;
+            use_validation = True
+            v_labels = np.array(flatten_sequence(validation_labels, True))
 
         e = 1
         while True:
@@ -526,15 +527,15 @@ class Network:
                                                     time.time() - epoch_start))
 
             if use_validation:
-                v_predictions = self.predict(validation_data)
-                current_auc = auc(validation_labels,v_predictions)
-                if current_auc >= current_best_auc:
+                v_predictions = np.array(flatten_sequence(self.predict(validation_data), True))
+                current_auc = auc(v_labels,v_predictions)
+                if current_auc >= 0.5 : # current_best_auc:
                     current_best_auc = current_auc
                 else:
                     break;
             else:
-                if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
-                    break;
+            if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
+                break;
             e += 1
 
         print("{:=<40}".format(''))
@@ -867,7 +868,7 @@ def run_npstopout_test():
 
     writetoCSV(fp, 'nps_predictions')
 
-    print('AUC: {}'.format(eu.auc(fl[:,1:4],fp[:,1:4])))
+    print('AUC: {}'.format(auc(fl[:,1:4],fp[:,1:4])))
 
 
 def run_scan_test():
@@ -891,7 +892,7 @@ def run_scan_test():
 
 
 if __name__ == "__main__":
-    #run_sine_test()
+    # run_sine_test()
 
     run_npstopout_test()
     # run_scan_test()
