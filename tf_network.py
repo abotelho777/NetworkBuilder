@@ -534,8 +534,8 @@ class Network:
                 else:
                     break;
             else:
-            if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
-                break;
+                if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
+                    break;
             e += 1
 
         print("{:=<40}".format(''))
