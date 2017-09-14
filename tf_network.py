@@ -872,11 +872,5 @@ def run_scan_test():
 
 
 if __name__ == "__main__":
-    # run_sine_test()
-
+    # test function:
     run_npstopout_test()
-    # run_scan_test()
-
-    # data = du.read_csv('nps_predictions.csv',headers=False)
-    # for i in data[:10]:
-    #     print(i)
