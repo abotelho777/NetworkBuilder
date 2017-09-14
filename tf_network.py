@@ -1,8 +1,7 @@
 import numpy as np
 import tensorflow as tf
-import evaluationutility as eu
 import time
-
+from evaluationutility import *
 
 class Normalization:
     NONE = 'None'
@@ -449,7 +448,7 @@ class Network:
 
         return batch_cost
 
-    def train(self, x, y, step=0.1, max_epochs=100, threshold=0.01, batch=10, cost_method=Cost.MSE):
+    def train(self, x, y, validation_data=None, validation_labels=None, step=0.1, max_epochs=100, threshold=0.01, batch=10, cost_method=Cost.MSE):
 
         print("{:=<40}".format(''))
         print("{:^40}".format("Training Network"))
@@ -487,6 +486,12 @@ class Network:
                                                                         axis=0).reshape((-1))
 
         train_start = time.time()
+        current_best_auc = 0;
+        use_validation = False
+
+        if validation_labels is not None and validation_data is not None:
+            use_validation = True
+            v_labels = np.array(flatten_sequence(validation_labels, True))
 
         e = 1
         while True:
@@ -521,8 +526,16 @@ class Network:
             print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.mean(cost),
                                                     time.time() - epoch_start))
 
-            if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
-                break
+            if use_validation:
+                v_predictions = np.array(flatten_sequence(self.predict(validation_data), True))
+                current_auc = auc(v_labels,v_predictions)
+                if current_auc >= 0.5 : # current_best_auc:
+                    current_best_auc = current_auc
+                else:
+                    break;
+            else:
+                if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
+                    break;
             e += 1
 
         print("{:=<40}".format(''))
@@ -794,6 +807,8 @@ def run_sine_test():
     np.random.seed(1)
     data, labels = generate_timeseries_test(samples=1000, max_sequence=20, regular_offset=0.3, categorical=False)
 
+    validation_data, validation_labels = generate_timeseries_test(samples=100, max_sequence=20, regular_offset=0.3, categorical=False)
+
     np.random.seed(0)
     tf.set_random_seed(0)
 
@@ -802,9 +817,9 @@ def run_sine_test():
         .add_rnn_layer(2, activation=tf.identity) \
         .add_dense_layer(labels[0].shape[-1], activation=tf.identity)
 
-    net.set_max_backprop_timesteps(3)
+    #net.set_max_backprop_timesteps(3)
 
-    net.train(data, labels, epochs=50, step=1e-3, batch=10, cost_method='rmse')
+    net.train(data, labels,validation_data, validation_labels, max_epochs=50, step=1e-3, batch=10, cost_method='rmse', threshold=0.01)
 
     pred = net.predict(np.sin(np.array(range(20)) * 0.3).reshape((1, -1, 1)))
 
@@ -823,6 +838,9 @@ def run_npstopout_test():
     training = np.load('resources/nps_training.npy', encoding='bytes')
     training_labels = np.load('resources/nps_training_labels.npy', encoding='bytes')
 
+    validation_data = np.load('resources/nps_testing.npy', encoding='bytes')
+    validation_labels = np.load('resources/nps_testing_labels.npy', encoding='bytes')
+
     testing = np.load('resources/nps_testing.npy', encoding='bytes')
     testing_labels = np.load('resources/nps_testing_labels.npy', encoding='bytes')
 
@@ -836,7 +854,9 @@ def run_npstopout_test():
               max_epochs=20,
               threshold=1e-3,
               batch=3,
-              cost_method=Cost.CROSS_ENTROPY)
+              cost_method=Cost.CROSS_ENTROPY,
+              validation_data=validation_data,
+              validation_labels=validation_labels)
 
     pred = net.predict(testing[:200])
 
@@ -848,7 +868,7 @@ def run_npstopout_test():
 
     writetoCSV(fp, 'nps_predictions')
 
-    print('AUC: {}'.format(eu.auc(fl[:,1:4],fp[:,1:4])))
+    print('AUC: {}'.format(auc(fl[:,1:4],fp[:,1:4])))
 
 
 def run_scan_test():
