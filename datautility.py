@@ -5,6 +5,25 @@ import psycopg2 as pg
 import sys
 import warnings
 import csv
+import warnings
+import functools
+
+def deprecated(func):
+    """This is a decorator which can be used to mark functions
+    as deprecated. It will result in a warning being emmitted
+    when the function is used.
+
+    from https://stackoverflow.com/questions/2536307/decorators-in-the-python-standard-lib-deprecated-specifically
+    """
+
+    @functools.wraps(func)
+    def new_func(*args, **kwargs):
+        warnings.simplefilter('always', DeprecationWarning)  # turn off filter
+        warnings.warn("Call to deprecated function {}.".format(func.__name__),
+                      category=DeprecationWarning, stacklevel=2)
+        warnings.simplefilter('default', DeprecationWarning)  # reset filter
+        return func(*args, **kwargs)
+    return new_func
 
 
 def getfilenames(directory='./', extension=None):
@@ -64,7 +83,10 @@ def write_csv(data, filename, headers=None):
     if headers is None:
         headers = []
 
-    with open(filename + '.csv', 'w') as f:
+    if not filename.endswith('.csv'):
+        filename += '.csv'
+
+    with open(filename, 'w') as f:
         writer = csv.writer(f, delimiter=',', lineterminator = '\n')
 
         if len(headers)!=0:
@@ -88,6 +110,10 @@ def write_csv(data, filename, headers=None):
 def read_csv(filename, max_rows=None, headers=True):
     if max_rows is not None:
         max_rows += 1
+
+    if not filename.endswith('.csv'):
+        filename += '.csv'
+
     data = __load_csv__(filename,max_rows)
 
     if headers:
@@ -99,6 +125,9 @@ def read_csv(filename, max_rows=None, headers=True):
 
 
 def read_csv_headers(filename):
+    if not filename.endswith('.csv'):
+        filename += '.csv'
+
     with open(filename, 'r') as f:
         for line in f.readlines():
             return line.strip().split(',')
@@ -259,6 +288,18 @@ def print_descriptives(ar, headers=None, desc_level=1):
                                                           desc2 if desc_level > 1 else '',
                                                           desc3 if desc_level > 2 else ''))
     print("{:=<{size}}\n".format('', size=50 + (30 * desc_level)))
+
+
+def ndims(ar):
+    d = 0
+    a = ar
+
+    while hasattr(a, '__iter__'):
+        d += 1
+        a = a[0]
+
+    return d
+
 
 
 def db_connect(db_name, user, password='', host='127.0.0.1', port='5432'):

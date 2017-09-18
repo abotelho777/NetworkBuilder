@@ -1,7 +1,10 @@
 import numpy as np
 import tensorflow as tf
+from datautility import deprecated
+import datautility as du
+import evaluationutility as eu
 import time
-from evaluationutility import *
+
 
 class Normalization:
     NONE = 'None'
@@ -19,6 +22,7 @@ class Cost:
 
 
 class Network:
+
     def __init__(self):
         self.layers = []
         self.__is_init = False
@@ -30,16 +34,21 @@ class Network:
         self.args = dict()
 
         self.normalization = Normalization.NONE
-        self.outputs = None
+
+        self.cost_method = Cost.MSE
+        self.cost_function = None
+        self.__cost = []
+        self.__outputs = []
+        self.__output_layers = []
+        self.__output_weights = []
+
+        self.__tmp_multi_out = None
 
         self.deepest_hidden_layer = None
 
         self.recurrent = False
         self.use_last = False
         self.deepest_recurrent_layer = None
-        self.__max_timesteps = 50
-
-        self.__max_time_backprop = 3
 
         self.__deepest_hidden_layer_ind = None
 
@@ -47,6 +56,67 @@ class Network:
 
         # self.session = tf.InteractiveSession(config=tf.ConfigProto(device_count={'GPU': 0}))  # use CPU
         self.session = tf.InteractiveSession()  # use GPU
+
+    def set_default_cost_method(self, cost_method=Cost.MSE):
+        self.cost_method = cost_method
+
+    def get_deepest_hidden_layer(self):
+        return self.deepest_hidden_layer
+
+    def get_deepest_hidden_layer_index(self):
+        return self.__deepest_hidden_layer_ind
+
+    def get_layer(self, index):
+        if not (0 <= index < len(self.layers)):
+            raise IndexError('Index is out of range for the network with {} layers'.format(len(self.layers)))
+        return self.layers[index]
+
+    def begin_multi_output(self, cost_methods=None, weights=None):
+        self.__tmp_multi_out = dict()
+
+        if cost_methods is None:
+            cost_methods = [self.cost_method]
+        cost_methods = np.array(cost_methods).reshape((-1))
+
+        if weights is None:
+            weights = [1]
+        weights = np.array(weights).reshape((-1))
+
+        self.__tmp_multi_out['methods'] = cost_methods
+        self.__tmp_multi_out['weights'] = weights
+        self.__tmp_multi_out['deepest_hidden'] = self.__deepest_hidden_layer_ind
+
+        return self
+
+    def end_multi_output(self):
+        if self.__tmp_multi_out is None:
+            return self
+
+        self.__deepest_hidden_layer_ind = self.__tmp_multi_out['deepest_hidden']
+        self.deepest_hidden_layer = self.layers[self.__tmp_multi_out['deepest_hidden']]
+
+        for i in range(self.__tmp_multi_out['deepest_hidden']+1, len(self.layers)):
+            if len(self.__tmp_multi_out['methods']) == 1:
+                m = self.__tmp_multi_out['methods'][0]
+            elif i < len(self.__tmp_multi_out['methods']):
+                m = self.__tmp_multi_out['methods'][i]
+            else:
+                m = self.cost_method
+
+            if len(self.__tmp_multi_out['weights']) == 1:
+                w = self.__tmp_multi_out['weights'][0]
+            elif i < len(self.__tmp_multi_out['weights']):
+                w = self.__tmp_multi_out['weights'][i]
+            else:
+                w = 1
+
+            self.__outputs.append(self.layers[i]['h'])
+            self.__output_layers.append(i)
+            self.__cost.append(m)
+            self.__output_weights.append(w)
+
+        self.__tmp_multi_out = None
+        return self
 
     def add_input_layer(self, n, normalization=Normalization.NONE):
         layer = dict()
@@ -76,6 +146,25 @@ class Network:
         self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
+    def add_input_layer_from_network(self, network, layer_index):
+        network_layer = network.get_layer(layer_index)
+
+        layer = dict()
+        layer['n'] = network_layer['n']
+        layer['z'] = network.layers[0]['z']
+        layer['param'] = network_layer['param']
+        layer['a'] = network_layer['a']
+        layer['h'] = network_layer['h']
+
+        self.normalization = Normalization.NONE
+        self.args = network.args
+        self.recurrent = network.recurrent
+
+        self.layers.insert(max(0, len(self.layers)), layer)
+        self.deepest_hidden_layer = self.layers[-1]
+        self.__deepest_hidden_layer_ind = len(self.layers) - 1
+        return self
+
     def add_dense_layer(self, n, activation=tf.identity):
         layer = dict()
         layer['n'] = n
@@ -91,8 +180,9 @@ class Network:
         layer['a'] = activation
         layer['h'] = layer['a'](tf.reshape(layer['z'],[bsize,-1,n]))
         self.layers.insert(max(0, len(self.layers)), layer)
-        self.deepest_hidden_layer = self.layers[-1]
-        self.__deepest_hidden_layer_ind = len(self.layers) - 1
+        if self.__tmp_multi_out is None:
+            self.deepest_hidden_layer = self.layers[-1]
+            self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
     def add_inverse_layer(self, layer_index, activation=tf.identity):
@@ -108,9 +198,10 @@ class Network:
 
         bsize = tf.shape(self.layers[-1]['h'])[0]
         layer['z'] = tf.matmul(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
-                               tf.transpose(inv['param']['w'][:(-inv['n']),:])) + layer['param']['b']
+                               tf.transpose(inv['param']['w'])) + \
+                     layer['param']['b']
         layer['a'] = activation
-        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, inv['n']]))
+        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, self.layers[layer_index-1]['n']]))
         self.layers.insert(max(0, len(self.layers)), layer)
         return self
 
@@ -233,9 +324,11 @@ class Network:
 
         layer['h'] = layer['a'](tf.transpose(lstm_zs,[1,0,2]))
         self.layers.insert(max(0, len(self.layers)), layer)
-        self.deepest_hidden_layer = self.layers[-1]
         self.deepest_recurrent_layer = len(self.layers)-1
-        self.__deepest_hidden_layer_ind = len(self.layers) - 1
+
+        if self.__tmp_multi_out is None:
+            self.deepest_hidden_layer = self.layers[-1]
+            self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
     def add_gru_layer(self, n, use_last=False, activation=tf.identity):
@@ -310,9 +403,11 @@ class Network:
 
         layer['h'] = layer['a'](tf.transpose(gru_zs, [1, 0, 2]))
         self.layers.insert(max(0, len(self.layers)), layer)
-        self.deepest_hidden_layer = self.layers[-1]
         self.deepest_recurrent_layer = len(self.layers)-1
-        self.__deepest_hidden_layer_ind = len(self.layers) - 1
+
+        if self.__tmp_multi_out is None:
+            self.deepest_hidden_layer = self.layers[-1]
+            self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
     def add_rnn_layer(self, n, use_last=False, activation=tf.identity):
@@ -363,9 +458,11 @@ class Network:
 
         layer['h'] = layer['a'](tf.transpose(rnn_zs, [1, 0, 2]))
         self.layers.insert(max(0, len(self.layers)), layer)
-        self.deepest_hidden_layer = self.layers[-1]
         self.deepest_recurrent_layer = len(self.layers)-1
-        self.__deepest_hidden_layer_ind = len(self.layers)-1
+
+        if self.__tmp_multi_out is None:
+            self.deepest_hidden_layer = self.layers[-1]
+            self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
     def add_dropout_layer(self, n, keep=0.5, activation=tf.identity):
@@ -386,41 +483,70 @@ class Network:
         layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, n]))
         self.layers.insert(max(0, len(self.layers)), layer)
         self.args[self.layers[-1]['param']['arg']] = keep
-        self.deepest_hidden_layer = self.layers[-1]
-        self.__deepest_hidden_layer_ind = len(self.layers) - 1
+        if self.__tmp_multi_out is None:
+            self.deepest_hidden_layer = self.layers[-1]
+            self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
-    def __initialize(self, cost_function=Cost.MSE):
+    def __initialize(self):
         if not self.__is_init:
-            self.y = tf.placeholder(tf.float32, [None, None, self.layers[-1]['n']], name='y')
 
-            if cost_function == Cost.CROSS_ENTROPY:
-                self.cost_function = tf.reduce_mean(-tf.reduce_sum(self.y * tf.log(self.layers[-1]['h']),
-                                                                   reduction_indices=[-1]))
-            elif cost_function == Cost.L2_NORM:
-                self.cost_function = tf.reduce_sum((self.layers[-1]['h'] - self.y)**2, reduction_indices=[-1])/2
-            elif cost_function == Cost.RMSE:
-                self.cost_function = tf.sqrt(tf.reduce_mean(tf.squared_difference(self.layers[-1]['h'], self.y),
+            self.y = []
+
+            if len(self.__outputs) == 0:
+                self.__outputs.append(self.layers[-1]['h'])
+                self.__output_layers.append(len(self.layers)-1)
+                self.__cost.append(self.cost_method)
+                self.__output_weights.append(1)
+
+            for i in range(len(self.__outputs)):
+
+                out_y = tf.placeholder(tf.float32, [None, None, self.layers[self.__output_layers[i]]['n']],
+                                       name='y'+str(i))
+
+                # print(self.layers[self.__output_layers[i]]['n'])
+                # exit(1)
+
+                method = self.__cost[i]
+
+                # TODO: refactor cost to ensure tf.mean does not count missing nan/zero values
+
+                if method == Cost.CROSS_ENTROPY:
+                    cost_fn = tf.reduce_mean(-tf.reduce_sum(out_y * tf.log(self.__outputs[i]),
                                                             reduction_indices=[-1]))
-            else:
-                self.cost_function = tf.reduce_mean(tf.squared_difference(self.layers[-1]['h'], self.y),
-                                                    reduction_indices=[-1])
+                elif method == Cost.L2_NORM:
+                    sq_dif = tf.squared_difference(self.__outputs[i], out_y)
+                    cost_fn = tf.reduce_sum(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
+                                            reduction_indices=[-1])/2
+                elif method == Cost.RMSE:
+                    sq_dif = tf.squared_difference(self.__outputs[i], out_y)
+                    cost_fn = tf.reduce_mean(tf.sqrt(tf.reduce_mean(tf.where(tf.is_nan(sq_dif),
+                                                              tf.zeros_like(sq_dif),
+                                                              sq_dif), reduction_indices=[-1])))
+                else:
+                    sq_dif = tf.squared_difference(self.__outputs[i], out_y)
+                    cost_fn = tf.reduce_mean(tf.reduce_mean(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
+                                             reduction_indices=[-1]))
 
-            correct_prediction = tf.equal(tf.argmax(self.y, 1), tf.argmax(self.layers[-1]['h'], 1))
-            self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+                if self.cost_function is None:
+                    self.cost_function = self.__output_weights[i] * cost_fn
+                else:
+                    self.cost_function += self.__output_weights[i] * cost_fn
+
+                self.y.append(out_y)
 
             self.update = tf.train.AdagradOptimizer(self.step_size, name='update')
             self.minimize_cost = self.update.minimize(self.cost_function)
 
             self.var_grads = self.update.compute_gradients(self.cost_function, tf.trainable_variables())
-            self.clipped_var_grads = [(tf.clip_by_norm(grad if grad is not None else tf.zeros_like(var), 10.), var) for
-                                      grad, var in self.var_grads]
-
+            self.clipped_var_grads = [(tf.clip_by_norm(
+                tf.where(tf.is_nan(grad if grad is not None else tf.zeros_like(var)), tf.zeros_like(var),
+                         grad if grad is not None else tf.zeros_like(var)), 10.), var) for grad, var in self.var_grads]
             self.update_weights = self.update.apply_gradients(self.clipped_var_grads)
 
             tf.global_variables_initializer().run()
 
-            tf.get_default_graph().finalize()
+            # tf.get_default_graph().finalize()
 
             self.__is_init = True
 
@@ -430,6 +556,10 @@ class Network:
         valid = np.argwhere(np.array([len(k) for k in x[s]]) > 0).ravel()
 
         series_batch = x[s][valid]
+
+        # print(len(y))
+        # print(np.array(y, dtype=object))
+        # exit(1)
         series_label = None
         if not self.use_last:
             series_label = y[s][valid]
@@ -437,38 +567,75 @@ class Network:
 
         series_batch_padded = np.array(
             [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in series_batch])
-        series_label_padded = np.array(
-            [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in series_label])
 
-        self.args[self.layers[0]['z']] = series_batch_padded.reshape((len(series_batch),n_timestep,-1))
-        self.args[self.y] = series_label_padded.reshape((len(series_batch), n_timestep, -1))
+        series_label_padded = []
+
+        # print(series_label)
+        # print(np.array([a[i] for a in series_label]))
+        # exit(1)
+
+        for i in range(len(series_label[0])):
+            series_label_padded.append(np.array(
+                [np.pad(sl, ((0, n_timestep - len(sl)), (0, 0)), 'constant', constant_values=0) for sl in
+                 np.array([a[i] for a in series_label])]).reshape((len(series_batch), n_timestep, -1)))
+
+        # print(series_label_padded)
+        # exit(1)
+
+        self.args[self.layers[0]['z']] = series_batch_padded.reshape((len(series_batch), n_timestep, -1))
+
+        if not len(self.y) == len(series_label_padded):
+            raise IndexError('The number of output layers does not match the labels supplied')
+
+        for i in range(len(self.y)):
+            self.args[self.y[i]] = series_label_padded[i]
+
+        # print(self.session.run(self.layers[0]['h'], feed_dict=self.args))
+        # exit(1)
 
         cost, _ = self.session.run([self.cost_function, self.update_weights], feed_dict=self.args)
         batch_cost.append(cost)
 
         return batch_cost
 
-    def train(self, x, y, validation_data=None, validation_labels=None, step=0.1, max_epochs=100, threshold=0.01, batch=10, cost_method=Cost.MSE):
+    def train(self, x, y, validation_data=None, validation_labels=None, step=0.1, max_epochs=100, threshold=0.01,
+              batch=1, cost_method=Cost.MSE):
 
-        print("{:=<40}".format(''))
-        print("{:^40}".format("Training Network"))
-        print("{:=<40}".format(''))
-        structure = "{}n".format(self.layers[0]['n'])
-        for i in range(1, len(self.layers)):
-            structure += " -> {}n".format(self.layers[i]['n'])
-        print("-{} layers: {}".format(len(self.layers), structure))
-        print("-{} epochs".format(max_epochs))
-        print("-step size = {}".format(step))
-        print("-batch size = {}".format(batch))
-        print("{:=<40}".format(''))
-        print("{:<10}{:^10}{:>10}".format("Epoch", "Cost", "Time"))
-        print("{:=<40}".format(''))
+        if not (du.ndims(x) == 3 and du.ndims(y) == 4):
+            pass
+            # TODO: if data is passed as wrong shape, reformat
+            # TODO: ensure validation data also has correct format/shape
+
+        use_validation = False
+
+        if validation_labels is not None and validation_data is not None:
+            use_validation = True
+            # v_labels = np.array(flatten_sequence(validation_labels, True))
 
         self.step_size = step
         self.batch_size = batch
         self.training_epochs = max_epochs
 
-        self.__initialize(cost_method)
+        self.__initialize()
+
+        print("{:=<40}".format(''))
+        print("{:^40}".format("Training Network"))
+        print("{:=<40}".format(''))
+        structure = "{}n".format(self.layers[0]['n'])
+        for i in range(1, self.__deepest_hidden_layer_ind + 1):
+            structure += " -> {}n".format(self.layers[i]['n'])
+        structure += " -> {}n".format(self.layers[self.__output_layers[0]]['n'])
+        for i in range(1, len(self.__outputs)):
+            structure += ", {}n".format(self.layers[self.__output_layers[i]]['n'])
+
+        print("-{} layers: {}".format(len(self.layers), structure))
+        print("-{} epochs".format(max_epochs))
+        print("-step size = {}".format(step))
+        print("-batch size = {}".format(batch))
+        print("{:=<40}".format(''))
+        # TODO: include validation cost when using validation set
+        print("{:<10}{:^10}{:>10}".format("Epoch", "Cost", "Time"))
+        print("{:=<40}".format(''))
 
         if self.normalization == Normalization.Z_SCORE:
             self.args[self.layers[0]['param']['arg']['stat1']] = np.mean(np.hstack([np.array(i).ravel() for i in x])
@@ -486,25 +653,19 @@ class Network:
                                                                         axis=0).reshape((-1))
 
         train_start = time.time()
-        current_best_auc = 0;
-        use_validation = False
-
-        if validation_labels is not None and validation_data is not None:
-            use_validation = True
-            v_labels = np.array(flatten_sequence(validation_labels, True))
 
         e = 1
         while True:
             epoch_start = time.time()
 
-            v = list(range(x.shape[0]))
-            np.random.shuffle(v)
-            x = x[v]
-            y = y[v]
+            # v = list(range(x.shape[0]))
+            # np.random.shuffle(v)
+            # x = x[v]
+            # y = y[v]
 
             cost = []
             for i in range(0, x.shape[0], batch):
-                s = range(i, min(x.shape[0], i + batch))
+                s = np.array(range(i, min(x.shape[0], i + batch)))
                 if len(s) < batch:
                     continue
 
@@ -513,40 +674,64 @@ class Network:
                     for j in batch_cost:
                         cost.append(j)
                 else:
-                    self.args[self.layers[0]['z']] = x[s]
-                    self.args[self.y] = y[s]
+                    ys = []
+
+                    for j in range(len(y[s][0])):
+                        ys.append(np.array([a[j] for a in y[s]]).reshape((batch, 1, -1)))
+
+                    self.args[self.layers[0]['z']] = x[s].reshape((batch, 1, -1))
+
+                    if not len(self.y) == len(ys):
+                        raise IndexError('The number of output layers does not match the labels supplied')
+
+                    for j in range(len(self.y)):
+                        self.args[self.y[j]] = ys[j]
+
                     self.minimize_cost.run(feed_dict=self.args)
-                    cost.append(self.getCost(x[s], y[s], False))
+                    cost.append(self.get_cost(x[s], y[s], False))
 
             if e > 1:
                 mean_last_ten = np.mean(cost[-10:])
             else:
                 mean_last_ten = 0
 
+
+            # TODO: print validation cost in addition to training when using validation set
             print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.mean(cost),
                                                     time.time() - epoch_start))
 
-            if use_validation:
-                v_predictions = np.array(flatten_sequence(self.predict(validation_data), True))
-                current_auc = auc(v_labels,v_predictions)
-                if current_auc >= 0.5 : # current_best_auc:
-                    current_best_auc = current_auc
-                else:
-                    break;
-            else:
-                if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
-                    break;
+            # TODO: use validation set in stopping criterion when using validation set
+            # if use_validation:
+            #     v_predictions = np.array(flatten_sequence(self.predict(validation_data), True))
+            #     current_auc = auc(v_labels,v_predictions)
+            #     if current_auc >= 0.5 : # current_best_auc:
+            #         current_best_auc = current_auc
+            #     else:
+            #         break
+            # else:
+            #     if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
+            #         break
+
+            if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
+                break
             e += 1
 
         print("{:=<40}".format(''))
         print("Total Time: {:<.1f}s".format(time.time() - train_start))
 
-    def predict(self, x, layer=-1):
+    def predict(self, x):
+        # TODO: add ability to predict from last hidden layer
+
+        if not (du.ndims(x) == 3):
+            pass
+            # TODO: if data is passed as wrong shape, reformat
+
         arg = dict(self.args)
         for i in arg:
             if 'keep' in i.name:
                 arg[i] = 1
-        del arg[self.y]
+        for i in self.y:
+            del arg[i]
 
         if self.recurrent:
             pred = []
@@ -561,37 +746,53 @@ class Network:
                 [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in series_batch])
 
             arg[self.layers[0]['z']] = series_batch_padded.reshape((len(x), n_timestep, -1))
-            p = self.session.run(self.layers[-1]['h'],feed_dict=arg)
+            p = self.session.run(self.__outputs, feed_dict=arg)
 
-            for j in range(len(samp_timestep)):
-                pred.append(np.array(p[j])[:samp_timestep[j]])
+            for i in range(len(self.__outputs)):
+                out_p = []
+                for j in range(len(samp_timestep)):
+                    out_p.append(np.array(p[i][j])[:samp_timestep[j]])
+                pred.append(np.array(out_p))
 
             return pred
         else:
             arg[self.layers[0]['z']] = x
-            return self.layers[layer]['h'].eval(feed_dict=arg)
+            out = self.session.run(self.__outputs, feed_dict=arg)
+            return [flatten_sequence(a) for a in out]
 
-    def getAccuracy(self, x, y, test=True):
+    def get_cost(self, x, y, test=True):
+
+        if not (du.ndims(x) == 3 and du.ndims(y) == 4):
+            pass
+            # TODO: if data is passed as wrong shape, reformat
+
         arg = dict(self.args)
         if test:
             for i in arg:
                 if 'keep' in i.name:
                     arg[i] = 1
-        arg[self.layers[0]['z']] = x
-        arg[self.y] = y
-        return self.accuracy.eval(feed_dict=arg)
 
-    def getCost(self, x, y, test=True):
-        arg = dict(self.args)
-        if test:
-            for i in arg:
-                if 'keep' in i.name:
-                    arg[i] = 1
-        arg[self.layers[0]['z']] = x
-        arg[self.y] = y
+
+        if self.recurrent:
+            pred = []
+
+            valid = np.argwhere(np.array([len(k) for k in x]) > 0).ravel()
+            series_batch = x[valid]
+
+            samp_timestep = [len(k) for k in series_batch]
+            n_timestep = max(samp_timestep)
+
+            series_batch_padded = np.array(
+                [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in series_batch])
+
+            arg[self.layers[0]['z']] = series_batch_padded.reshape((len(x), n_timestep, -1))
+        else:
+            arg[self.layers[0]['z']] = x
+
         return self.cost_function.eval(feed_dict=arg)
 
 
+@deprecated
 def loadData(x_file, y_file, x_stride=15, n=None):
     x = []
     y = []
@@ -622,6 +823,7 @@ def loadData(x_file, y_file, x_stride=15, n=None):
     return np.array(x), np.array(y)
 
 
+@deprecated
 def loadCSV(filename, max_rows=None):
     csvarr = []
     with open(filename, 'r') as f:
@@ -642,6 +844,7 @@ def loadCSV(filename, max_rows=None):
     return csvarr
 
 
+@deprecated
 def writetoCSV(ar,filename,headers=[]):
     # ar = np.array(transpose(ar))
     ar = np.array(ar)
@@ -662,6 +865,7 @@ def writetoCSV(ar,filename,headers=[]):
     f.close()
 
 
+@deprecated
 def loadCSVwithHeaders(filename, max_rows=None):
     if max_rows is not None:
         max_rows += 1
@@ -672,6 +876,7 @@ def loadCSVwithHeaders(filename, max_rows=None):
     return data,headers
 
 
+@deprecated
 def readHeadersCSV(filename):
     with open(filename, 'r') as f:
         for line in f.readlines():
@@ -680,12 +885,16 @@ def readHeadersCSV(filename):
     return []
 
 
+@deprecated
 def softmax(z):
     t = np.exp(z - z.max())
     return t / np.sum(t, axis=1, keepdims=True)
 
 
 def print_label_distribution(labels, label_names=None):
+    # TODO: rewrite with new structure
+    # TODO: move to datautility
+
     print("\nLabel Distribution:")
 
     n = np.sum(np.array(labels), axis=0)
@@ -702,48 +911,124 @@ def print_label_distribution(labels, label_names=None):
         print("   " + label_names[i] + ":", "{:<6}".format(int(n[i])), "({0:.0f}%)".format(dist[i]*100))
 
 
-def flatten_sequence(sequence, include_sample_num=False):
-    ar = []
-    for i in range(len(sequence)):
-        for j in sequence[i]:
-            if include_sample_num:
-                row = [i]
-                for k in j:
-                    row.append(k)
-                ar.append(row)
-            else:
-                ar.append(j)
+def flatten_sequence(sequence):
+    # TODO: move to datautility
 
-    return np.array(ar)
+    seq = list(sequence)
+    dims = du.ndims(seq)
+
+    if dims <= 2:
+        return seq
+
+    try:  # try the simple case
+        return np.hstack([np.array(i).ravel() for i in seq]).reshape((-1, np.array(seq[0]).shape[1]))
+    except (ValueError, IndexError):
+        try:
+            ar = None
+            for i in range(len(seq)):
+                row = seq[i][0]
+                for t in range(1, len(seq[i])):
+                    ntime = len(seq[i][t])
+                    row = np.append(row, np.hstack([np.array(j).ravel() for j in seq[i][t]]).reshape((ntime, -1)), 1)
+
+                if ar is None:
+                    ar = row
+                else:
+                    ar = np.append(ar, row, 0)
+            return ar
+        except ValueError:
+            raise ValueError('sequence must be in the basic shape: (sample, time step, ... )')
 
 
-def reshape_sequence(table, pivot, labels=None, columns=None, order=None, sequence_label=False):
+def format_data(table, identifier=None, labels=None, columns=None, order=None, as_sequence=False):
+    # TODO: move to datautility
+    if as_sequence:
+        if identifier is None:
+            raise ValueError('identifier cannot be None when formatting as a sequence.')
+        return reshape_sequence(table, identifier, labels, columns, order)
+
+    table = np.array(table)
+    table[np.where(table == '')] = 'nan'
+
+    if order is None:
+        ordering = list(range(len(table)))
+    else:
+        try:
+            tbl_order = np.array(table[:, order], dtype=np.float32)
+        except ValueError:
+            tbl_order = np.array(table[:, order], dtype=str)
+        ordering = np.argsort(tbl_order)
+
+    table = table[ordering]
+
+    id_ind = table.shape[1]
+    table = np.append(table, np.array(range(len(table))).reshape((-1, 1)), 1)
+
+    return reshape_sequence(table, id_ind, labels, columns, None)
+
+
+def reshape_sequence(table, pivot, labels=None, columns=None, order=None):
+    # TODO: move to datautility
     if columns is None:
         columns = range(table.shape[-1])
     col = np.array(columns)
 
-    p = np.array(np.unique(table[:,pivot]))
-    seq = {'key': [], 'x': [], 'y': []}
+    table = np.array(table)
+    table[np.where(table == '')] = 'nan'
+
+    try:
+        tbl_order = np.array(table[:, pivot], dtype=np.float32)
+    except ValueError:
+        tbl_order = np.array(table[:, pivot], dtype=str)
+
+    _, piv = np.unique(tbl_order, return_index=True)
+    p = table[piv, pivot]
+
+    seq = dict()
+    key = []
+    x = []
+    y = []
+
     for i in p:
-        match = np.where(table[:,pivot] == i)
+        match = np.argwhere(np.array(table[:, pivot]) == i).ravel()
 
-        seq['key'].append(i)
+        key.append(i)
 
-        seq['x'].append(np.array(table[match, col.reshape((-1, 1))],dtype=np.float32).T[np.argsort(table[match, order])]\
-            .reshape((-1, len(col))))
+        if order is None:
+            ordering = list(range(len(match)))
+        else:
+            try:
+                tbl_order = np.array(table[match, order], dtype=np.float32)
+            except ValueError:
+                tbl_order = np.array(table[match, order], dtype=str)
+            ordering = np.argsort(tbl_order)
+
+        x.append(np.array(table[match, col.reshape((-1, 1))],
+                                 dtype=np.float32).T[ordering].reshape((-1, len(col))))
 
         lab = None
         if labels is not None:
-            y = np.array(table[match, np.array(labels).reshape((-1, 1))],dtype=np.float32).T[np.argsort(table[match, order])]\
-                .reshape((-1, len(labels)))
-            lab = y if not sequence_label else y[-1]
-        seq['y'].append(lab)
-    seq['key'] = np.array(seq['key'])
-    seq['x'] = np.array(seq['x'])
-    seq['y'] = np.array(seq['y'])
+            labels = np.array(labels)
+
+            if not hasattr(labels[0], '__iter__'):
+                lab = {0: np.array(table[match, np.array(labels).reshape((-1, 1))],
+                               dtype=np.float32).T[ordering].reshape((-1, len(labels)))}
+            else:
+                lab = dict()
+                ind = 0
+                for j in labels:
+                    mlabel = np.array(j).reshape((-1))
+                    lab[ind] = np.array(table[match, np.array(mlabel).reshape((-1, 1))],
+                                          dtype=np.float32).T[ordering].reshape((-1, len(mlabel)))
+                    ind += 1
+
+        y.append(lab)
+    seq['key'] = np.array(key)
+    seq['x'] = np.array(x)
+    seq['y'] = np.array(y)
     return seq
 
-
+@deprecated
 def Aprime(actual, predicted):
     assert len(actual) == len(predicted)
 
@@ -805,9 +1090,7 @@ def generate_timeseries_test(samples=1000, max_sequence=50, regular_offset=None,
 
 def run_sine_test():
     np.random.seed(1)
-    data, labels = generate_timeseries_test(samples=1000, max_sequence=20, regular_offset=0.3, categorical=False)
-
-    validation_data, validation_labels = generate_timeseries_test(samples=100, max_sequence=20, regular_offset=0.3, categorical=False)
+    data, labels = generate_timeseries_test(samples=1000, max_sequence=10, regular_offset=None, categorical=False)
 
     np.random.seed(0)
     tf.set_random_seed(0)
@@ -817,9 +1100,12 @@ def run_sine_test():
         .add_rnn_layer(2, activation=tf.identity) \
         .add_dense_layer(labels[0].shape[-1], activation=tf.identity)
 
-    #net.set_max_backprop_timesteps(3)
+    net.set_default_cost_method(Cost.MSE)
 
-    net.train(data, labels,validation_data, validation_labels, max_epochs=50, step=1e-3, batch=10, cost_method='rmse', threshold=0.01)
+    net.train(data, labels, step=0.01,
+              max_epochs=20,
+              threshold=1e-3,
+              batch=1)
 
     pred = net.predict(np.sin(np.array(range(20)) * 0.3).reshape((1, -1, 1)))
 
@@ -830,7 +1116,7 @@ def run_sine_test():
 
 def run_npstopout_test():
     np.random.seed(1)
-    data, labels = generate_timeseries_test(samples=1000, max_sequence=20, regular_offset=0.3, categorical=False)
+    data, labels = generate_timeseries_test(samples=1000, max_sequence=5, regular_offset=0.3, categorical=False)
 
     print(labels.shape)
     print(labels[0].shape)
@@ -838,25 +1124,23 @@ def run_npstopout_test():
     training = np.load('resources/nps_training.npy', encoding='bytes')
     training_labels = np.load('resources/nps_training_labels.npy', encoding='bytes')
 
-    validation_data = np.load('resources/nps_testing.npy', encoding='bytes')
-    validation_labels = np.load('resources/nps_testing_labels.npy', encoding='bytes')
-
     testing = np.load('resources/nps_testing.npy', encoding='bytes')
     testing_labels = np.load('resources/nps_testing_labels.npy', encoding='bytes')
 
     net = Network() \
         .add_input_layer(training[0].shape[-1], normalization=Normalization.Z_SCORE) \
         .add_lstm_layer(200, peepholes=True, activation=tf.nn.relu) \
-        .add_dense_layer(training_labels[0].shape[-1], activation=tf.nn.softmax)
+        .begin_multi_output(cost_methods=[Cost.CROSS_ENTROPY]) \
+        .add_dense_layer(training_labels[0].shape[-1], activation=tf.nn.softmax) \
+        .end_multi_output()
+
+    net.set_default_cost_method(Cost.CROSS_ENTROPY)
 
     net.train(x=training[:200], y=training_labels[:200],
               step=0.01,
               max_epochs=20,
               threshold=1e-3,
-              batch=3,
-              cost_method=Cost.CROSS_ENTROPY,
-              validation_data=validation_data,
-              validation_labels=validation_labels)
+              batch=3)
 
     pred = net.predict(testing[:200])
 
@@ -868,7 +1152,7 @@ def run_npstopout_test():
 
     writetoCSV(fp, 'nps_predictions')
 
-    print('AUC: {}'.format(auc(fl[:,1:4],fp[:,1:4])))
+    print('AUC: {}'.format(eu.auc(fl[:,1:4],fp[:,1:4])))
 
 
 def run_scan_test():
@@ -891,6 +1175,59 @@ def run_scan_test():
     print(sess.run(tf_sum, feed_dict=d))
 
 
+def run_multi_label_test():
+    data, labels = du.read_csv('resources/artificial_sequences.csv')
+    du.print_descriptives(data,labels)
+
+    flat = format_data(data,1, [2,3,4], [2,3,4], 0, False)
+    seq = format_data(data, 1, [[5], [6, 7, 8]], [2, 3, 4], 0, True)
+    # seq = reshape_sequence(data, 1, [[5],[6,7,8]], [2,3,4],0)
+
+    ae = Network().add_input_layer(3, normalization=Normalization.NONE)\
+        .add_dense_layer(2, activation=tf.nn.tanh)\
+        .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
+    ae.set_default_cost_method(Cost.L2_NORM)
+
+    ae.train(x=flat['x'], y=flat['y'], step=0.01,max_epochs=20,threshold=0.0001,batch=2)
+
+    net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
+        .add_rnn_layer(10, activation=tf.nn.relu)\
+        .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
+        .add_dense_layer(1, activation=tf.nn.sigmoid) \
+        .add_dense_layer(3, activation=tf.nn.softmax)\
+        .end_multi_output()
+
+    net.set_default_cost_method(Cost.MSE)
+
+    net.train(x=seq['x'], y=seq['y'], step=0.01,
+              max_epochs=20, threshold=0.0001, batch=2)
+
+    pred = net.predict(x=seq['x'])
+
+    print('========== PREDICTIONS ==========')
+    p = 0
+    for i in pred:
+        print('\n------ Y{} ------'.format(p))
+        flat_p = flatten_sequence(i)
+        for j in flat_p:
+            print(j)
+        p += 1
+
+
+
+
+
+
 if __name__ == "__main__":
-    # test function:
-    run_npstopout_test()
+    # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
+
+    # run_sine_test()
+
+    run_multi_label_test()
+
+    # run_npstopout_test()
+    # run_scan_test()
+
+    # data = du.read_csv('nps_predictions.csv',headers=False)
+    # for i in data[:10]:
+    #     print(i)
