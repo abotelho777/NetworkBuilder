@@ -512,8 +512,10 @@ class Network:
                 # TODO: refactor cost to ensure tf.mean does not count missing nan/zero values
 
                 if method == Cost.CROSS_ENTROPY:
-                    cost_fn = tf.reduce_mean(-tf.reduce_sum(out_y * tf.log(self.__outputs[i]),
-                                                            reduction_indices=[-1]))
+                    sum_cross_entropy = -tf.reduce_sum(out_y * tf.log(self.__outputs[i]),
+                                                            reduction_indices=[-1])
+                    cost_fn = tf.reduce_mean(tf.where(tf.is_nan(sum_cross_entropy), tf.zeros_like(sum_cross_entropy),
+                                                      sum_cross_entropy))
                 elif method == Cost.L2_NORM:
                     sq_dif = tf.squared_difference(self.__outputs[i], out_y)
                     cost_fn = tf.reduce_sum(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
@@ -594,6 +596,11 @@ class Network:
         # exit(1)
 
         cost, _ = self.session.run([self.cost_function, self.update_weights], feed_dict=self.args)
+        # print(cost)
+        # if cost == float('nan') or np.isnan(cost):
+        # print('output',self.session.run(self.__outputs,feed_dict=self.args))
+        # print('summed cost',self.session.run(self.cost_function, feed_dict=self.args))
+        # exit(1)
         batch_cost.append(cost)
 
         return batch_cost
@@ -1176,43 +1183,146 @@ def run_scan_test():
 
 
 def run_multi_label_test():
-    data, labels = du.read_csv('resources/artificial_sequences.csv')
-    du.print_descriptives(data,labels)
+    # data, labels = du.read_csv('resources/artificial_sequences.csv')
+    # du.print_descriptives(data,labels)
+    #
+    # flat = format_data(data,1, [2,3,4], [2,3,4], 0, False)
+    # seq = format_data(data, 1, [[5], [6, 7, 8]], [2, 3, 4], 0, True)
+    # # seq = reshape_sequence(data, 1, [[5],[6,7,8]], [2,3,4],0)
 
-    flat = format_data(data,1, [2,3,4], [2,3,4], 0, False)
-    seq = format_data(data, 1, [[5], [6, 7, 8]], [2, 3, 4], 0, True)
-    # seq = reshape_sequence(data, 1, [[5],[6,7,8]], [2,3,4],0)
+    ################
+    maxrows = 100000
 
-    ae = Network().add_input_layer(3, normalization=Normalization.NONE)\
-        .add_dense_layer(2, activation=tf.nn.tanh)\
+    #data, labels = du.read_csv('labeled_compressed92features.csv',max_rows=maxrows)
+    #data, labels = du.read_csv('labeled_compressed92features.csv')
+    #du.print_descriptives(data, labels)
+
+    # flat = format_data(data, 1, list(range(4,96)),list(range(4,96)),3, False)
+    # seq = format_data(data, 1, [97],list(range(4,96)),3, True)
+    #
+    # np.save('x_formatted.npy', seq['x'])
+    # # same with y
+    # np.save('y_formatted.npy', seq['y'])
+    #
+    # np.save('x_flat.npy', flat['x'])
+    # # same with y
+    # np.save('y_flat.npy', flat['y'])
+    # ###################
+    # rows = 100000
+    # seq = dict()
+    # # x = []
+    # # y = []
+    # x = np.load('x_formatted.npy')
+    # #same with seq['y']
+    # y = np.load('y_formatted.npy')
+    # seq['x'] = np.array(x)[:rows]
+    # seq['y'] = np.array(y)[:rows]
+    # # print('seq["y"][0]',seq['y'][0])
+    # # print('seq["y"][0]',seq['y'][1])
+    # seq['y'] = myOffset(seq['y'])
+    # # print('Offset', seq['y'][0])
+    # # print('Offset', seq['y'][1])
+    # ############################
+    #
+    # net = Network().add_input_layer(92,normalization=Normalization.NONE)\
+    #     .add_rnn_layer(200,activation=tf.nn.relu)\
+    #     .add_dense_layer(1, activation=tf.nn.sigmoid)
+    #
+    # net.set_default_cost_method(Cost.CROSS_ENTROPY)
+    #
+    # net.train(x=seq['x'], y=seq['y'], step=0.01,
+    #           max_epochs=2, threshold=0.0001, batch=2)
+
+    ###############################
+    rows = 10
+    seq = dict()
+    flat = dict()
+    # x = []
+    # y = []
+    x = np.load('x_formatted.npy')
+    y = np.load('y_formatted.npy')
+    fx = np.load('x_flat.npy')
+    fy = np.load('y_flat.npy')
+    seq['x'] = np.array(x)[:rows]
+    seq['y'] = np.array(y)[:rows]
+    flat['x'] = np.array(fx)[:rows]
+    flat['y'] = np.array(fy)[:rows]
+    # print('seq["y"][0]',seq['y'][0])
+    # print('seq["y"][0]',seq['y'][1])
+    seq['y'] = myOffset(seq['y'])
+    #flat['y'] = myOffset(flat['y'])
+    # print('Offset', seq['y'][0])
+    # print('Offset', seq['y'][1])
+
+    ae = Network().add_input_layer(92, normalization=Normalization.NONE)\
+        .add_dense_layer(46, activation=tf.nn.tanh)\
         .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
     ae.set_default_cost_method(Cost.L2_NORM)
-
-    ae.train(x=flat['x'], y=flat['y'], step=0.01,max_epochs=20,threshold=0.0001,batch=2)
+    print('DBaeTrain')
+    ae.train(x=flat['x'], y=flat['y'], step=0.01,max_epochs=2,threshold=0.0001,batch=2)
 
     net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
-        .add_rnn_layer(10, activation=tf.nn.relu)\
+        .add_rnn_layer(46, activation=tf.nn.relu)\
         .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
         .add_dense_layer(1, activation=tf.nn.sigmoid) \
-        .add_dense_layer(3, activation=tf.nn.softmax)\
         .end_multi_output()
 
-    net.set_default_cost_method(Cost.MSE)
-
+    net.set_default_cost_method(Cost.CROSS_ENTROPY)
+    print('DBTrain')
     net.train(x=seq['x'], y=seq['y'], step=0.01,
-              max_epochs=20, threshold=0.0001, batch=2)
-
+              max_epochs=2, threshold=0.0001, batch=2)
+    print('DBPred')
     pred = net.predict(x=seq['x'])
 
-    print('========== PREDICTIONS ==========')
-    p = 0
-    for i in pred:
-        print('\n------ Y{} ------'.format(p))
-        flat_p = flatten_sequence(i)
-        for j in flat_p:
-            print(j)
-        p += 1
+    # net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
+    #     .add_rnn_layer(10, activation=tf.nn.relu)\
+    #     .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
+    #     .add_dense_layer(1, activation=tf.nn.sigmoid) \
+    #     .add_dense_layer(3, activation=tf.nn.softmax)\
+    #     .end_multi_output()
 
+    # print('========== PREDICTIONS ==========')
+    # p = 0
+    # for i in pred:
+    #     print('\n------ Y{} ------'.format(p))
+    #     flat_p = flatten_sequence(i)
+    #     for j in flat_p:
+    #         print(j)
+    #     p += 1
+
+    # print('--',flatten_sequence(pred[0]).ravel())
+    #print(eu.auc(actual=np.array(data[:, 97],dtype=np.float32),predicted=flatten_sequence(pred[0]).ravel()))
+    #print(flatten_sequence(pred[0]).ravel())
+    # a = my4dto2d(seq['y'])
+    # print(a[0])
+    # print(eu.auc(actual=a,predicted=flatten_sequence(pred[0]).ravel()))
+    print('DBAUC')
+    print(eu.auc(actual=my4dto2d(seq['y']),predicted=flatten_sequence(pred[0]).ravel()))
+    #print(eu.auc(actual=np.array(data[:, 97],dtype=np.float32),predicted=flatten_sequence(pred[0]).ravel()))
+    #print(Aprime(actual=np.array(data[:, 97],dtype=np.float32),predicted=flatten_sequence(pred[0]).ravel()))
+
+def my4dto2d(array):
+    result = []
+    for i in array:
+        result.extend((i[0]).ravel())
+    return np.array(result,dtype=np.float32)
+    #return result
+
+
+
+def myOffset(label):
+    result = np.copy(label)
+    #result = label[:]
+    id = 0
+    for i in label:
+        index = 0
+        for j in i[0]:
+            if index > 0:
+                result[id][0][index-1] = j
+            index+=1
+        result[id][0][index-1] = [np.nan]
+        id+=1
+    return result
 
 
 
@@ -1225,7 +1335,7 @@ if __name__ == "__main__":
 
     run_multi_label_test()
 
-    # run_npstopout_test()
+    #run_npstopout_test()
     # run_scan_test()
 
     # data = du.read_csv('nps_predictions.csv',headers=False)
