@@ -504,7 +504,7 @@ class Network:
                 out_y = tf.placeholder(tf.float32, [None, None, self.layers[self.__output_layers[i]]['n']],
                                        name='y'+str(i))
 
-                # print(self.layers[self.__output_layers[i]]['n'])
+                print(self.layers[self.__output_layers[i]]['n'])
                 # exit(1)
 
                 method = self.__cost[i]
@@ -1046,7 +1046,10 @@ def Aprime(actual, predicted):
     score = [[],[]]
 
     for i in range(0,len(actual)):
-        score[int(actual[i])].append(predicted[i])
+        # print(actual[i])
+        # print(predicted[i])
+        if not np.isnan(actual[i]):
+            score[int(actual[i])].append(predicted[i])
 
     sum = 0.0
     for p in score[1]:
@@ -1191,88 +1194,86 @@ def run_multi_label_test():
     # # seq = reshape_sequence(data, 1, [[5],[6,7,8]], [2,3,4],0)
 
     ################
-    maxrows = 100000
+    #maxrows = 100000
 
     #data, labels = du.read_csv('labeled_compressed92features.csv',max_rows=maxrows)
-    #data, labels = du.read_csv('labeled_compressed92features.csv')
-    #du.print_descriptives(data, labels)
-
+    # data, labels = du.read_csv('labeled_compressed92features.csv')
+    # du.print_descriptives(data, labels)
+    #
     # flat = format_data(data, 1, list(range(4,96)),list(range(4,96)),3, False)
-    # seq = format_data(data, 1, [97],list(range(4,96)),3, True)
+    # seq = format_data(data, 1, [100],list(range(4,96)),3, True)
+    # #Wheelspin 100
     #
-    # np.save('x_formatted.npy', seq['x'])
-    # # same with y
-    # np.save('y_formatted.npy', seq['y'])
+    # np.save('x_formatted_wheelspin.npy', seq['x'])
+    # np.save('y_formatted.npy_wheelspin', seq['y'])
     #
-    # np.save('x_flat.npy', flat['x'])
-    # # same with y
-    # np.save('y_flat.npy', flat['y'])
+    # np.save('x_flat_wheelspin.npy', flat['x'])
+    # np.save('y_flat_wheelspin.npy', flat['y'])
     # ###################
-    # rows = 100000
-    # seq = dict()
-    # # x = []
-    # # y = []
-    # x = np.load('x_formatted.npy')
-    # #same with seq['y']
-    # y = np.load('y_formatted.npy')
-    # seq['x'] = np.array(x)[:rows]
-    # seq['y'] = np.array(y)[:rows]
-    # # print('seq["y"][0]',seq['y'][0])
-    # # print('seq["y"][0]',seq['y'][1])
-    # seq['y'] = myOffset(seq['y'])
-    # # print('Offset', seq['y'][0])
-    # # print('Offset', seq['y'][1])
-    # ############################
-    #
-    # net = Network().add_input_layer(92,normalization=Normalization.NONE)\
-    #     .add_rnn_layer(200,activation=tf.nn.relu)\
-    #     .add_dense_layer(1, activation=tf.nn.sigmoid)
-    #
-    # net.set_default_cost_method(Cost.CROSS_ENTROPY)
-    #
-    # net.train(x=seq['x'], y=seq['y'], step=0.01,
-    #           max_epochs=2, threshold=0.0001, batch=2)
-
-    ###############################
-    rows = 10
+    rows = 100
     seq = dict()
-    flat = dict()
     # x = []
     # y = []
     x = np.load('x_formatted.npy')
     y = np.load('y_formatted.npy')
-    fx = np.load('x_flat.npy')
-    fy = np.load('y_flat.npy')
+    # x = np.load('x_formatted_wheelspin.npy')
+    # y = np.load('y_formatted.npy_wheelspin.npy')
     seq['x'] = np.array(x)[:rows]
     seq['y'] = np.array(y)[:rows]
-    flat['x'] = np.array(fx)[:rows]
-    flat['y'] = np.array(fy)[:rows]
-    # print('seq["y"][0]',seq['y'][0])
-    # print('seq["y"][0]',seq['y'][1])
     seq['y'] = myOffset(seq['y'])
-    #flat['y'] = myOffset(flat['y'])
-    # print('Offset', seq['y'][0])
-    # print('Offset', seq['y'][1])
+    ############################
 
-    ae = Network().add_input_layer(92, normalization=Normalization.NONE)\
-        .add_dense_layer(46, activation=tf.nn.tanh)\
-        .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
-    ae.set_default_cost_method(Cost.L2_NORM)
-    print('DBaeTrain')
-    ae.train(x=flat['x'], y=flat['y'], step=0.01,max_epochs=2,threshold=0.0001,batch=2)
+    net = Network().add_input_layer(92,normalization=Normalization.NONE)\
+        .add_rnn_layer(200,activation=tf.nn.relu)\
+        .add_dense_layer(1, activation=tf.nn.sigmoid)
 
-    net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
-        .add_rnn_layer(46, activation=tf.nn.relu)\
-        .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
-        .add_dense_layer(1, activation=tf.nn.sigmoid) \
-        .end_multi_output()
+    net.set_default_cost_method(Cost.MSE)
 
-    net.set_default_cost_method(Cost.CROSS_ENTROPY)
-    print('DBTrain')
     net.train(x=seq['x'], y=seq['y'], step=0.01,
-              max_epochs=2, threshold=0.0001, batch=2)
-    print('DBPred')
+              max_epochs=20, threshold=0.0001, batch=2)
+
     pred = net.predict(x=seq['x'])
+
+    ###############################
+    # rows = 10
+    # seq = dict()
+    # flat = dict()
+    # # x = []
+    # # y = []
+    # x = np.load('x_formatted.npy')
+    # y = np.load('y_formatted.npy')
+    # fx = np.load('x_flat.npy')
+    # fy = np.load('y_flat.npy')
+    # seq['x'] = np.array(x)[:rows]
+    # seq['y'] = np.array(y)[:rows]
+    # flat['x'] = np.array(fx)[:rows]
+    # flat['y'] = np.array(fy)[:rows]
+    # # print('seq["y"][0]',seq['y'][0])
+    # # print('seq["y"][0]',seq['y'][1])
+    # seq['y'] = myOffset(seq['y'])
+    # #flat['y'] = myOffset(flat['y'])
+    # # print('Offset', seq['y'][0])
+    # # print('Offset', seq['y'][1])
+    #
+    # ae = Network().add_input_layer(92, normalization=Normalization.NONE)\
+    #     .add_dense_layer(46, activation=tf.nn.tanh)\
+    #     .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
+    # ae.set_default_cost_method(Cost.L2_NORM)
+    # print('DBaeTrain')
+    # ae.train(x=flat['x'], y=flat['y'], step=0.01,max_epochs=2,threshold=0.0001,batch=2)
+    #
+    # net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
+    #     .add_rnn_layer(46, activation=tf.nn.relu)\
+    #     .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
+    #     .add_dense_layer(1, activation=tf.nn.sigmoid) \
+    #     .end_multi_output()
+    #
+    # net.set_default_cost_method(Cost.CROSS_ENTROPY)
+    # print('DBTrain')
+    # net.train(x=seq['x'], y=seq['y'], step=0.01,
+    #           max_epochs=2, threshold=0.0001, batch=2)
+    # print('DBPred')
+    # pred = net.predict(x=seq['x'])
 
     # net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
     #     .add_rnn_layer(10, activation=tf.nn.relu)\
@@ -1296,10 +1297,10 @@ def run_multi_label_test():
     # a = my4dto2d(seq['y'])
     # print(a[0])
     # print(eu.auc(actual=a,predicted=flatten_sequence(pred[0]).ravel()))
-    print('DBAUC')
-    print(eu.auc(actual=my4dto2d(seq['y']),predicted=flatten_sequence(pred[0]).ravel()))
+    # print('DBAUC')
+    # print(eu.auc(actual=my4dto2d(seq['y']),predicted=flatten_sequence(pred[0]).ravel()))
     #print(eu.auc(actual=np.array(data[:, 97],dtype=np.float32),predicted=flatten_sequence(pred[0]).ravel()))
-    #print(Aprime(actual=np.array(data[:, 97],dtype=np.float32),predicted=flatten_sequence(pred[0]).ravel()))
+    print(Aprime(actual=my4dto2d(seq['y']),predicted=flatten_sequence(pred[0]).ravel()))
 
 def my4dto2d(array):
     result = []
@@ -1332,9 +1333,13 @@ if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
 
     # run_sine_test()
-
+    starttime = time.time()
+    from datetime import datetime
+    print(str(datetime.now()))
     run_multi_label_test()
-
+    print(str(datetime.now()))
+    endtime = time.time()
+    print('Time cost: ',endtime-starttime)
     #run_npstopout_test()
     # run_scan_test()
 
