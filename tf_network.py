@@ -498,37 +498,48 @@ class Network:
                 self.__output_layers.append(len(self.layers)-1)
                 self.__cost.append(self.cost_method)
                 self.__output_weights.append(1)
+                self.__deepest_hidden_layer_ind -= 1
+                self.deepest_hidden_layer = self.layers[self.__deepest_hidden_layer_ind]
 
             for i in range(len(self.__outputs)):
 
                 out_y = tf.placeholder(tf.float32, [None, None, self.layers[self.__output_layers[i]]['n']],
                                        name='y'+str(i))
 
-                print(self.layers[self.__output_layers[i]]['n'])
-                # exit(1)
-
                 method = self.__cost[i]
 
-                # TODO: refactor cost to ensure tf.mean does not count missing nan/zero values
-
                 if method == Cost.CROSS_ENTROPY:
-                    sum_cross_entropy = -tf.reduce_sum(out_y * tf.log(self.__outputs[i]),
-                                                            reduction_indices=[-1])
-                    cost_fn = tf.reduce_mean(tf.where(tf.is_nan(sum_cross_entropy), tf.zeros_like(sum_cross_entropy),
-                                                      sum_cross_entropy))
+                    sum_cross_entropy = -tf.reduce_sum(
+                        tf.where(tf.is_nan(out_y), self.__outputs[i], out_y) * tf.log(self.__outputs[i]),
+                        reduction_indices=[-1])
+                    sce = tf.reduce_sum(tf.where(tf.is_nan(sum_cross_entropy), tf.zeros_like(sum_cross_entropy),
+                                                 sum_cross_entropy))
+                    cost_fn = sce/(tf.cast(tf.count_nonzero(sum_cross_entropy),
+                                           tf.float32)+tf.constant(1e-8, dtype=tf.float32))
+
                 elif method == Cost.L2_NORM:
-                    sq_dif = tf.squared_difference(self.__outputs[i], out_y)
-                    cost_fn = tf.reduce_sum(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
-                                            reduction_indices=[-1])/2
+                    sq_dif = tf.squared_difference(self.__outputs[i], tf.where(tf.is_nan(out_y),
+                                                                               self.__outputs[i], out_y))
+                    sse = tf.reduce_sum(tf.reduce_sum(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
+                                                      reduction_indices=[-1]))
+                    cost_fn = sse / 2
+
                 elif method == Cost.RMSE:
-                    sq_dif = tf.squared_difference(self.__outputs[i], out_y)
-                    cost_fn = tf.reduce_mean(tf.sqrt(tf.reduce_mean(tf.where(tf.is_nan(sq_dif),
-                                                              tf.zeros_like(sq_dif),
-                                                              sq_dif), reduction_indices=[-1])))
+                    sq_dif = tf.squared_difference(self.__outputs[i], tf.where(tf.is_nan(out_y),
+                                                                               self.__outputs[i], out_y))
+                    sse = tf.reduce_sum(tf.reduce_sum(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
+                                                      reduction_indices=[-1]))
+                    cost_fn = tf.sqrt(sse/(tf.cast(tf.count_nonzero(sq_dif),
+                                                   tf.float32)+tf.constant(1e-8, dtype=tf.float32)))
+
+
                 else:
-                    sq_dif = tf.squared_difference(self.__outputs[i], out_y)
-                    cost_fn = tf.reduce_mean(tf.reduce_mean(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
-                                             reduction_indices=[-1]))
+                    sq_dif = tf.squared_difference(self.__outputs[i], tf.where(tf.is_nan(out_y),
+                                                                               self.__outputs[i], out_y))
+                    sse = tf.reduce_sum(tf.reduce_sum(tf.where(tf.is_nan(sq_dif), tf.zeros_like(sq_dif), sq_dif),
+                                                      reduction_indices=[-1]))
+                    cost_fn = sse / (tf.cast(tf.count_nonzero(sq_dif),
+                                             tf.float32) + tf.constant(1e-8, dtype=tf.float32))
 
                 if self.cost_function is None:
                     self.cost_function = self.__output_weights[i] * cost_fn
@@ -578,7 +589,7 @@ class Network:
 
         for i in range(len(series_label[0])):
             series_label_padded.append(np.array(
-                [np.pad(sl, ((0, n_timestep - len(sl)), (0, 0)), 'constant', constant_values=0) for sl in
+                [np.pad(sl, ((0, n_timestep - len(sl)), (0, 0)), 'constant', constant_values=np.nan) for sl in
                  np.array([a[i] for a in series_label])]).reshape((len(series_batch), n_timestep, -1)))
 
         # print(series_label_padded)
@@ -599,7 +610,10 @@ class Network:
         # print(cost)
         # if cost == float('nan') or np.isnan(cost):
         # print('output',self.session.run(self.__outputs,feed_dict=self.args))
-        # print('summed cost',self.session.run(self.cost_function, feed_dict=self.args))
+        # print('labels',series_label_padded)
+        # print('maybe',self.session.run(self.maybe,feed_dict=self.args))
+        # print('cost',self.session.run(self.cost_function, feed_dict=self.args))
+        # print('cost n', self.session.run(self.cost_n,feed_dict=self.args))
         # exit(1)
         batch_cost.append(cost)
 
@@ -704,7 +718,7 @@ class Network:
 
 
             # TODO: print validation cost in addition to training when using validation set
-            print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.mean(cost),
+            print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.nanmean(cost),
                                                     time.time() - epoch_start))
 
             # TODO: use validation set in stopping criterion when using validation set
@@ -1302,6 +1316,9 @@ def run_multi_label_test():
     #print(eu.auc(actual=np.array(data[:, 97],dtype=np.float32),predicted=flatten_sequence(pred[0]).ravel()))
     print(Aprime(actual=my4dto2d(seq['y']),predicted=flatten_sequence(pred[0]).ravel()))
 
+
+
+
 def my4dto2d(array):
     result = []
     for i in array:
@@ -1311,22 +1328,64 @@ def my4dto2d(array):
 
 
 
-def myOffset(label):
-    result = np.copy(label)
-    #result = label[:]
-    id = 0
-    for i in label:
-        index = 0
-        for j in i[0]:
-            if index > 0:
-                result[id][0][index-1] = j
-            index+=1
-        result[id][0][index-1] = [np.nan]
-        id+=1
+def myOffset(y, label=0):
+    result = np.array(y)
+
+    for s in range(len(result)):
+        for t in range(len(result[s][label])-1):
+            result[s][label][t] = result[s][label][t+1]
+        result[s][label][-1] = np.ones_like(result[s][label][0])*np.nan
     return result
 
 
+def run_npc_test():
 
+    rows = 1000
+    seq = dict()
+
+    n_folds = 5
+
+    x = np.load('x_formatted.npy')
+    y = np.load('y_formatted.npy')
+
+    seq['x'] = np.array(x)[:rows]
+    seq['y'] = np.array(y)[:rows]
+
+    seq['y'] = myOffset(seq['y'])
+
+    tf.set_random_seed(0)
+    np.random.seed(0)
+
+    fold = np.random.randint(0, n_folds, len(seq['x']))
+
+    fold_auc = []
+
+    for i in range(n_folds):
+        tf.reset_default_graph()
+
+        net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)\
+            .add_lstm_layer(200, activation=tf.identity)\
+            .add_dense_layer(1, activation=tf.nn.sigmoid)
+
+        net.set_default_cost_method(Cost.CROSS_ENTROPY)
+
+        training = np.argwhere(fold != i).ravel()
+        test_set = np.argwhere(fold == i).ravel()
+
+        net.train(x=seq['x'][training], y=seq['y'][training], step=0.01,
+                  max_epochs=20, threshold=0.0001, batch=1)
+
+        pred = net.predict(x=seq['x'][test_set])
+
+        fold_auc.append(Aprime(actual=my4dto2d(seq['y'][test_set]), predicted=flatten_sequence(pred[0]).ravel()))
+        print(fold_auc[-1])
+
+    print("{:=<40}".format(''))
+    for i in range(len(fold_auc)):
+        print("Fold {} AUC: {:<.3f}".format(i+1, fold_auc[i]))
+    print("{:=<40}".format(''))
+    print("Average AUC: {:<.3f} ({:<.3f})".format(np.mean(fold_auc), np.std(fold_auc)))
+    print("{:=<40}\n".format(''))
 
 
 if __name__ == "__main__":
@@ -1336,7 +1395,7 @@ if __name__ == "__main__":
     starttime = time.time()
     from datetime import datetime
     print(str(datetime.now()))
-    run_multi_label_test()
+    run_npc_test()
     print(str(datetime.now()))
     endtime = time.time()
     print('Time cost: ',endtime-starttime)
