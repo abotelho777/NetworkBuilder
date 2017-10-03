@@ -1343,7 +1343,7 @@ def run_npc_test():
     rows = 1000
     seq = dict()
 
-    n_folds = 5
+    n_folds = 1
 
     x = np.load('x_formatted.npy')
     y = np.load('y_formatted.npy')
@@ -1390,7 +1390,7 @@ def run_npc_test():
 
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
-
+    # haha
     # run_sine_test()
     starttime = time.time()
     from datetime import datetime
