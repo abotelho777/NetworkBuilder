@@ -1360,9 +1360,9 @@ def run_npc_test():
         flaty = np.load('flat_y_' + outputlabel + '.npy')
 
         flat = dict()
-        flat['key'] = np.array(flatk)[:rows]
-        flat['x'] = np.array(flatx)[:rows]
-        flat['y'] = np.array(flaty)[:rows]
+        flat['key'] = np.array(flatk)
+        flat['x'] = np.array(flatx)
+        flat['y'] = np.array(flaty)
 
     if outputlabel == 'npc' or outputlabel == 'fa':
         seq['y'] = myOffset(seq['y'])
@@ -1377,7 +1377,6 @@ def run_npc_test():
     for i in range(n_folds):
         tf.reset_default_graph()
 
-
         training = np.argwhere(fold != i).ravel()
         test_set = np.argwhere(fold == i).ravel()
 
@@ -1385,7 +1384,7 @@ def run_npc_test():
             T = seq['key'][training]
             aetraining = []
             for tt in T:
-                aetraining.extend(np.argwhere(flat['key'] == tt).ravel())
+                aetraining.extend(np.argwhere(np.array(flat['key'], dtype=str) == str(tt)).ravel())
 
             ae = Network().add_input_layer(92, normalization=Normalization.NONE)\
                 .add_dense_layer(46, activation=tf.nn.tanh)\
@@ -1422,6 +1421,7 @@ def run_npc_test():
     print("Average AUC: {:<.3f} ({:<.3f})".format(np.mean(fold_auc), np.std(fold_auc)))
     print("{:=<40}\n".format(''))
 
+
 def loadAndReshape(lb):
     label = 96
     if lb == 'npc':
@@ -1434,8 +1434,8 @@ def loadAndReshape(lb):
         label = 98
     else:
         print('Wrong label.')
-        exit(0)
-    data, labels = du.read_csv('labeled_compressed92features.csv',max_rows=100)
+        exit(1)
+    data, labels = du.read_csv('resources/labeled_compressed92features.csv')
     du.print_descriptives(data,labels)
 
     seq = format_data(data, 1, [label],list(range(4,96)),3, True)
@@ -1454,13 +1454,13 @@ def loadAndReshape(lb):
 
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
-    # haha
+
     # run_sine_test()
     starttime = time.time()
     from datetime import datetime
     print(str(datetime.now()))
     run_npc_test()
-    #loadAndReshape('ws')
+    # loadAndReshape('ws')
     print(str(datetime.now()))
     endtime = time.time()
     print('Time cost: ',endtime-starttime)
