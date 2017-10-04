@@ -1339,19 +1339,33 @@ def myOffset(y, label=0):
 
 
 def run_npc_test():
+    outputlabel = 'ws'
+    haveAE = True
+    rows = 100
 
-    rows = 1000
     seq = dict()
+    n_folds = 5
 
-    n_folds = 1
-
-    x = np.load('x_formatted.npy')
-    y = np.load('y_formatted.npy')
-
+    x = np.load('seq_x_' + outputlabel + '.npy')
+    y = np.load('seq_y_' + outputlabel + '.npy')
     seq['x'] = np.array(x)[:rows]
     seq['y'] = np.array(y)[:rows]
 
-    seq['y'] = myOffset(seq['y'])
+    if(haveAE):
+        k = np.load('seq_k_' + outputlabel + '.npy')
+        seq['key'] = np.array(k)[:rows]
+
+        flatk = np.load('flat_k_' + outputlabel + '.npy')
+        flatx = np.load('flat_x_' + outputlabel + '.npy')
+        flaty = np.load('flat_y_' + outputlabel + '.npy')
+
+        flat = dict()
+        flat['key'] = np.array(flatk)[:rows]
+        flat['x'] = np.array(flatx)[:rows]
+        flat['y'] = np.array(flaty)[:rows]
+
+    if outputlabel == 'npc' or outputlabel == 'fa':
+        seq['y'] = myOffset(seq['y'])
 
     tf.set_random_seed(0)
     np.random.seed(0)
@@ -1363,17 +1377,38 @@ def run_npc_test():
     for i in range(n_folds):
         tf.reset_default_graph()
 
-        net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)\
-            .add_lstm_layer(200, activation=tf.identity)\
-            .add_dense_layer(1, activation=tf.nn.sigmoid)
-
-        net.set_default_cost_method(Cost.CROSS_ENTROPY)
 
         training = np.argwhere(fold != i).ravel()
         test_set = np.argwhere(fold == i).ravel()
 
+        if(haveAE):
+            T = seq['key'][training]
+            aetraining = []
+            for tt in T:
+                aetraining.extend(np.argwhere(flat['key'] == tt).ravel())
+
+            ae = Network().add_input_layer(92, normalization=Normalization.NONE)\
+                .add_dense_layer(46, activation=tf.nn.tanh)\
+                .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
+            ae.set_default_cost_method(Cost.L2_NORM)
+
+            ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=0.01,max_epochs=2,threshold=0.0001,batch=2)
+
+            net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
+                .add_rnn_layer(46, activation=tf.nn.relu)\
+                .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
+                .add_dense_layer(1, activation=tf.nn.sigmoid) \
+                .end_multi_output()
+        # endif
+        else:
+            net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE) \
+                .add_lstm_layer(200, activation=tf.identity) \
+                .add_dense_layer(1, activation=tf.nn.sigmoid)
+
+        net.set_default_cost_method(Cost.CROSS_ENTROPY)
+
         net.train(x=seq['x'][training], y=seq['y'][training], step=0.01,
-                  max_epochs=20, threshold=0.0001, batch=1)
+                max_epochs=20, threshold=0.0001, batch=1)
 
         pred = net.predict(x=seq['x'][test_set])
 
@@ -1387,6 +1422,35 @@ def run_npc_test():
     print("Average AUC: {:<.3f} ({:<.3f})".format(np.mean(fold_auc), np.std(fold_auc)))
     print("{:=<40}\n".format(''))
 
+def loadAndReshape(lb):
+    label = 96
+    if lb == 'npc':
+        label = 96
+    elif lb == 'fa':
+        label = 97
+    elif lb == 'ws':
+        label = 100
+    elif lb == 'rc':
+        label = 98
+    else:
+        print('Wrong label.')
+        exit(0)
+    data, labels = du.read_csv('labeled_compressed92features.csv',max_rows=100)
+    du.print_descriptives(data,labels)
+
+    seq = format_data(data, 1, [label],list(range(4,96)),3, True)
+
+    np.save('seq_k_' + lb + '.npy', seq['key'])
+    np.save('seq_x_' + lb + '.npy', seq['x'])
+    np.save('seq_y_' + lb + '.npy', seq['y'])
+
+    flat = format_data(data, 1, list(range(4,96)),list(range(4,96)),3, False)
+    np.save('flat_k_' + lb + '.npy', flat['key'])
+    np.save('flat_x_' + lb + '.npy', flat['x'])
+    np.save('flat_y_' + lb + '.npy', flat['y'])
+
+
+
 
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
@@ -1396,6 +1460,7 @@ if __name__ == "__main__":
     from datetime import datetime
     print(str(datetime.now()))
     run_npc_test()
+    #loadAndReshape('ws')
     print(str(datetime.now()))
     endtime = time.time()
     print('Time cost: ',endtime-starttime)
