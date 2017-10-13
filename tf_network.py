@@ -1373,6 +1373,7 @@ def run_npc_test():
     fold = np.random.randint(0, n_folds, len(seq['x']))
 
     fold_auc = []
+    fold_rmse = []
 
     for i in range(n_folds):
         tf.reset_default_graph()
@@ -1412,13 +1413,24 @@ def run_npc_test():
         pred = net.predict(x=seq['x'][test_set])
 
         fold_auc.append(Aprime(actual=my4dto2d(seq['y'][test_set]), predicted=flatten_sequence(pred[0]).ravel()))
+        fold_rmse.append(eu.rmse(actual=my4dto2d(seq['y'][test_set]), predicted=flatten_sequence(pred[0]).ravel()))
+
         print(fold_auc[-1])
+        print(fold_rmse[-1])
 
     print("{:=<40}".format(''))
     for i in range(len(fold_auc)):
         print("Fold {} AUC: {:<.3f}".format(i+1, fold_auc[i]))
+
+    for i in range(len(fold_rmse)):
+        print("Fold {} AUC: {:<.3f}".format(i + 1, fold_rmse[i]))
+
     print("{:=<40}".format(''))
     print("Average AUC: {:<.3f} ({:<.3f})".format(np.mean(fold_auc), np.std(fold_auc)))
+    print("{:=<40}\n".format(''))
+
+    print("{:=<40}".format(''))
+    print("Average RMSE: {:<.3f} ({:<.3f})".format(np.mean(fold_rmse), np.std(fold_rmse)))
     print("{:=<40}\n".format(''))
 
 

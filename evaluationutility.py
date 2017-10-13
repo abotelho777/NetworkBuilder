@@ -1,5 +1,6 @@
 import numpy as np
 from sklearn.metrics import f1_score
+from sklearn.metrics import mean_squared_error
 
 
 def auc(actual, predicted, average_over_labels=True):
@@ -31,6 +32,11 @@ def auc(actual, predicted, average_over_labels=True):
 
 def f1(actual, predicted):
     return f1_score(np.array(actual), np.round(predicted))
+
+
+def rmse(actual, predicted):
+    assert len(actual) == len(predicted)
+    return np.sqrt(mean_squared_error(np.array(actual), np.array(predicted)))
 
 
 if __name__ == "__main__":
