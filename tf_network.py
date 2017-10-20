@@ -1328,7 +1328,7 @@ def my4dto2d(array):
 
 
 
-def myOffset(y, label=0):
+def myOffset(y,label=0):
     result = np.array(y)
 
     for s in range(len(result)):
@@ -1338,22 +1338,21 @@ def myOffset(y, label=0):
     return result
 
 
-def run_npc_test():
-    outputlabel = 'ws'
-    haveAE = True
-    rows = 100
+def run_npc_test(lb):
+    outputlabel = lb
+    haveAE = False
 
     seq = dict()
     n_folds = 5
 
     x = np.load('seq_x_' + outputlabel + '.npy')
     y = np.load('seq_y_' + outputlabel + '.npy')
-    seq['x'] = np.array(x)[:rows]
-    seq['y'] = np.array(y)[:rows]
+    seq['x'] = np.array(x)
+    seq['y'] = np.array(y)
 
     if(haveAE):
         k = np.load('seq_k_' + outputlabel + '.npy')
-        seq['key'] = np.array(k)[:rows]
+        seq['key'] = np.array(k)
 
         flatk = np.load('flat_k_' + outputlabel + '.npy')
         flatx = np.load('flat_x_' + outputlabel + '.npy')
@@ -1401,14 +1400,17 @@ def run_npc_test():
                 .end_multi_output()
         # endif
         else:
+            # net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE) \
+            #     .add_lstm_layer(200, activation=tf.identity) \
+            #     .add_dense_layer(1, activation=tf.nn.sigmoid)
             net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE) \
                 .add_lstm_layer(200, activation=tf.identity) \
-                .add_dense_layer(1, activation=tf.nn.sigmoid)
+                .add_dropout_layer(1,keep=0.6,activation=tf.nn.sigmoid)
 
         net.set_default_cost_method(Cost.CROSS_ENTROPY)
 
         net.train(x=seq['x'][training], y=seq['y'][training], step=0.01,
-                max_epochs=20, threshold=0.0001, batch=1)
+                max_epochs=2, threshold=0.0001, batch=1)
 
         pred = net.predict(x=seq['x'][test_set])
 
@@ -1443,11 +1445,11 @@ def loadAndReshape(lb):
     elif lb == 'ws':
         label = 100
     elif lb == 'rc':
-        label = 98
+        label = 99
     else:
         print('Wrong label.')
         exit(1)
-    data, labels = du.read_csv('resources/labeled_compressed92features.csv')
+    data, labels = du.read_csv('labeled_compressed92features.csv')
     du.print_descriptives(data,labels)
 
     seq = format_data(data, 1, [label],list(range(4,96)),3, True)
@@ -1462,23 +1464,15 @@ def loadAndReshape(lb):
     np.save('flat_y_' + lb + '.npy', flat['y'])
 
 
-
-
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
-
-    # run_sine_test()
+    # 2017/10/20
     starttime = time.time()
+    lb = 'ws'
     from datetime import datetime
     print(str(datetime.now()))
-    run_npc_test()
-    # loadAndReshape('ws')
+    #loadAndReshape(lb)
+    run_npc_test(lb)
     print(str(datetime.now()))
     endtime = time.time()
     print('Time cost: ',endtime-starttime)
-    #run_npstopout_test()
-    # run_scan_test()
-
-    # data = du.read_csv('nps_predictions.csv',headers=False)
-    # for i in data[:10]:
-    #     print(i)
