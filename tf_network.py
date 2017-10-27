@@ -1393,20 +1393,17 @@ def run_npc_test(lb,hiddenUnits,keepRate):
 
             ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=0.05,max_epochs=40, threshold=0.0001,batch=1)
 
-            net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
-                .add_lstm_layer(hiddenUnits, activation=tf.identity)\
-                .begin_multi_output([Cost.CROSS_ENTROPY]) \
-                .add_dropout_layer(1, keep=keepRate, activation=tf.nn.sigmoid) \
-                .end_multi_output()
+            net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())
         # endif
         else:
             # net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE) \
             #     .add_lstm_layer(200, activation=tf.identity) \
             #     .add_dense_layer(1, activation=tf.nn.sigmoid)
-            net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE) \
-                .add_dense_layer(46, activation=tf.nn.tanh) \
-                .add_lstm_layer(hiddenUnits, activation=tf.identity) \
-                .add_dropout_layer(1,keep=keepRate,activation=tf.nn.sigmoid)
+            net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
+
+        net.add_dense_layer(46, activation=tf.nn.tanh)\
+            .add_lstm_layer(hiddenUnits, activation=tf.identity) \
+            .add_dropout_layer(1, keep=keepRate, activation=tf.nn.sigmoid)
 
         net.set_default_cost_method(Cost.CROSS_ENTROPY)
 
