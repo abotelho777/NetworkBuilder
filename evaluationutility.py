@@ -36,7 +36,15 @@ def f1(actual, predicted):
 
 def rmse(actual, predicted):
     assert len(actual) == len(predicted)
-    return np.sqrt(mean_squared_error(np.array(actual), np.array(predicted)))
+    score = [[],[]]
+    for i in range(0,len(actual)):
+        # print(actual[i])
+        # print(predicted[i])
+        if not np.isnan(actual[i]):
+            score[1].append(predicted[i])
+            score[0].append(int(actual[i]))
+
+    return np.sqrt(mean_squared_error(np.array(score[0]), np.array(score[1])))
 
 
 if __name__ == "__main__":

@@ -548,7 +548,7 @@ class Network:
 
                 self.y.append(out_y)
 
-            self.update = tf.train.AdagradOptimizer(self.step_size, name='update')
+            self.update = tf.train.AdamOptimizer(self.step_size, name='update')
             self.minimize_cost = self.update.minimize(self.cost_function)
 
             self.var_grads = self.update.compute_gradients(self.cost_function, tf.trainable_variables())
@@ -1338,9 +1338,9 @@ def myOffset(y,label=0):
     return result
 
 
-def run_npc_test(lb):
+def run_npc_test(lb,hiddenUnits,keepRate):
     outputlabel = lb
-    haveAE = False
+    haveAE = True
 
     seq = dict()
     n_folds = 5
@@ -1391,12 +1391,12 @@ def run_npc_test(lb):
                 .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
             ae.set_default_cost_method(Cost.L2_NORM)
 
-            ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=0.01,max_epochs=2,threshold=0.0001,batch=2)
+            ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=0.01,max_epochs=40,threshold=0.0001,batch=2)
 
             net = Network().add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())\
-                .add_rnn_layer(46, activation=tf.nn.relu)\
-                .begin_multi_output([Cost.RMSE, Cost.CROSS_ENTROPY])\
-                .add_dense_layer(1, activation=tf.nn.sigmoid) \
+                .add_lstm_layer(hiddenUnits, activation=tf.nn.relu)\
+                .begin_multi_output([Cost.CROSS_ENTROPY]) \
+                .add_dropout_layer(1, keep=keepRate, activation=tf.nn.sigmoid) \
                 .end_multi_output()
         # endif
         else:
@@ -1404,21 +1404,23 @@ def run_npc_test(lb):
             #     .add_lstm_layer(200, activation=tf.identity) \
             #     .add_dense_layer(1, activation=tf.nn.sigmoid)
             net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE) \
-                .add_lstm_layer(200, activation=tf.identity) \
-                .add_dropout_layer(1,keep=0.6,activation=tf.nn.sigmoid)
+                .add_dense_layer(46, activation=tf.nn.tanh)\
+                .add_lstm_layer(hiddenUnits, activation=tf.identity) \
+                .add_dropout_layer(1,keep=keepRate,activation=tf.nn.sigmoid)
 
         net.set_default_cost_method(Cost.CROSS_ENTROPY)
 
         net.train(x=seq['x'][training], y=seq['y'][training], step=0.01,
-                max_epochs=2, threshold=0.0001, batch=1)
+                max_epochs=40, threshold=0.0001, batch=1)
 
         pred = net.predict(x=seq['x'][test_set])
 
         fold_auc.append(Aprime(actual=my4dto2d(seq['y'][test_set]), predicted=flatten_sequence(pred[0]).ravel()))
         fold_rmse.append(eu.rmse(actual=my4dto2d(seq['y'][test_set]), predicted=flatten_sequence(pred[0]).ravel()))
 
-        print(fold_auc[-1])
-        print(fold_rmse[-1])
+
+        print('AUC:',fold_auc[-1])
+        print('RMSE:',fold_rmse[-1])
 
     print("{:=<40}".format(''))
     for i in range(len(fold_auc)):
@@ -1466,13 +1468,17 @@ def loadAndReshape(lb):
 
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
-    # 2017/10/20
+
     starttime = time.time()
-    lb = 'ws'
+    lb = 'npc'
+    hiddenUnits = 200
+    keepRate = 0.6
+    print('Label:',lb,'HiddenUnits:',hiddenUnits)
     from datetime import datetime
     print(str(datetime.now()))
     #loadAndReshape(lb)
-    run_npc_test(lb)
+    run_npc_test(lb,hiddenUnits,keepRate)
     print(str(datetime.now()))
     endtime = time.time()
+    print('Label:', lb, 'HiddenUnits:', hiddenUnits)
     print('Time cost: ',endtime-starttime)
