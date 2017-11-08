@@ -1463,6 +1463,127 @@ def loadAndReshape(lb):
     np.save('flat_y_' + lb + '.npy', flat['y'])
 
 
+def run_experiments(lb):
+    outputlabel = lb
+
+    hidden = [200]
+    batch = [1]
+    layers = [1,2]
+    keep = [.3,.5, 1]
+    step = [0.0001, 0.00001]
+    AE = [True, False]
+    FC = [True, False]
+
+    headers = ['Hidden Nodes', 'Batch Size', 'Recurrent Layers', 'Keep Probability', 'Step Size', 'Auto Encoder',
+               'Fully Connected Layer', 'AUC', 'AUC SD', 'RMSE', 'RMSE SD', 'Training Time']
+
+    seq = dict()
+    n_folds = 5
+
+    x = np.load('seq_x_' + outputlabel + '.npy')
+    y = np.load('seq_y_' + outputlabel + '.npy')
+    seq['x'] = np.array(x)
+    seq['y'] = np.array(y)
+
+    k = np.load('seq_k_' + outputlabel + '.npy')
+    seq['key'] = np.array(k)
+
+    flatk = np.load('flat_k_' + outputlabel + '.npy')
+    flatx = np.load('flat_x_' + outputlabel + '.npy')
+    flaty = np.load('flat_y_' + outputlabel + '.npy')
+
+    flat = dict()
+    flat['key'] = np.array(flatk)
+    flat['x'] = np.array(flatx)
+    flat['y'] = np.array(flaty)
+
+    if outputlabel == 'npc' or outputlabel == 'fa':
+        seq['y'] = myOffset(seq['y'])
+
+    output = []
+
+    for a in AE:
+        for f in FC:
+            for l in layers:
+                for k in keep:
+                    for b in batch:
+                        for h in hidden:
+                            for s in step:
+                                if a and f:
+                                    continue
+                                start = time.time()
+                                tf.set_random_seed(0)
+                                np.random.seed(0)
+
+                                fold = np.random.randint(0, n_folds, len(seq['x']))
+
+                                fold_auc = []
+                                fold_rmse = []
+
+                                for i in range(n_folds):
+                                    tf.reset_default_graph()
+
+                                    training = np.argwhere(fold != i).ravel()
+                                    test_set = np.argwhere(fold == i).ravel()
+
+                                    if a:
+                                        T = seq['key'][training]
+                                        aetraining = []
+                                        for tt in T:
+                                            aetraining.extend(
+                                                np.argwhere(np.array(flat['key'], dtype=str) == str(tt)).ravel())
+
+                                        ae = Network().add_input_layer(92, normalization=Normalization.NONE) \
+                                            .add_dense_layer(46, activation=tf.nn.tanh) \
+                                            .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
+                                        ae.set_default_cost_method(Cost.L2_NORM)
+
+                                        ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=0.05,
+                                                 max_epochs=40,
+                                                 threshold=0.0001, batch=1)
+
+                                        net = Network().\
+                                            add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())
+
+                                    else:
+                                        net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
+
+                                    if f:
+                                        net.add_dense_layer(46, activation=tf.nn.tanh)
+
+                                    for _ in range(l):
+                                        net.add_lstm_layer(h, activation=tf.identity)
+
+                                    net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
+
+                                    net.set_default_cost_method(Cost.CROSS_ENTROPY)
+
+                                    net.train(x=seq['x'][training], y=seq['y'][training], step=s,
+                                              max_epochs=40, threshold=0.0001, batch=b)
+
+                                    pred = net.predict(x=seq['x'][test_set])
+
+                                    pred_flatten_sequence = flatten_sequence(pred[0]).ravel()
+                                    fold_auc.append(
+                                        Aprime(actual=my4dto2d(seq['y'][test_set]), predicted=pred_flatten_sequence))
+                                    fold_rmse.append(
+                                        eu.rmse(actual=my4dto2d(seq['y'][test_set]), predicted=pred_flatten_sequence))
+
+                                auc = np.mean(fold_auc)
+                                s_auc = np.std(fold_auc)
+                                rmse = np.mean(fold_rmse)
+                                s_rmse = np.std(fold_rmse)
+
+                                print("Average AUC: {:<.3f} ({:<.3f})".format(auc, s_auc))
+                                print("{:=<40}\n".format(''))
+
+                                print("{:=<40}".format(''))
+                                print("Average RMSE: {:<.3f} ({:<.3f})".format(rmse, s_rmse))
+
+                                output.append([h,b,l,k,s,a,f,auc,s_auc,rmse,s_rmse,time.time()-start])
+                                du.write_csv(output,'model_performance.csv',headers)
+
+
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
 
@@ -1474,7 +1595,8 @@ if __name__ == "__main__":
     from datetime import datetime
     print(str(datetime.now()))
     #loadAndReshape(lb)
-    run_npc_test(lb,hiddenUnits,keepRate)
+    # run_npc_test(lb,hiddenUnits,keepRate)
+    run_experiments(lb)
     print(str(datetime.now()))
     endtime = time.time()
     print('Label:', lb, 'HiddenUnits:', hiddenUnits)

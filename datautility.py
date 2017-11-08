@@ -37,6 +37,46 @@ def getfilenames(directory='./', extension=None):
     return names
 
 
+def read_paired_data_file(filename, delim='=', ignore='--'):
+    data = dict()
+
+    with open(filename, 'r', errors='replace') as f:
+        info = np.array(f.readlines())
+
+        if ignore is not None:
+            info = [i.strip() for i in
+                    info[np.argwhere([j not in ['\n'] and not j.startswith(ignore) for j in info]).reshape((-1))]]
+
+        for i in info:
+            pair = [j.strip() for j in i.split(delim)]
+            if len(pair) != 2:
+                print('\n\033[91m', 'ERROR - Unable to parse the line: {}'.format(i), '\033[0m\n')
+                sys.stdout.flush()
+            else:
+                data[pair[0].lower()] = pair[1]
+
+    return data
+
+
+def read_text_file(filename, sep=None, ignore='--'):
+    text = '' if sep is not None else []
+
+    with open(filename, 'r', errors='replace') as f:
+        info = np.array(f.readlines())
+
+        if ignore is not None:
+            info = [i.strip() for i in
+                    info[np.argwhere([j not in ['\n'] and not j.startswith(ignore) for j in info]).reshape((-1))]]
+
+        for i in info:
+            if sep is not None:
+                text += i + sep
+            else:
+                text.append(i)
+
+    return text
+
+
 def __load_csv__(filename, max_rows=None):
     csvarr = []
     n_lines = len(open(filename).readlines())
@@ -183,7 +223,7 @@ def infer_basic_type(ar, n=None):
                 continue
             else:
                 return 'text'
-    return 'double precision' if not is_int else 'int'
+    return 'double precision' if not is_int else 'integer'
 
 
 def as_factor(ar, return_labels=False):
@@ -195,6 +235,14 @@ def as_factor(ar, return_labels=False):
         lab = [label[int(i)] for i in ar]
         return ar, lab
     return ar
+
+
+def as_float(ar):
+    ar = np.array(ar, dtype=str)
+    ar[ar == '.'] = float('nan')
+    ar[ar == ' '] = float('nan')
+    ar[ar == ''] = float('nan')
+    return np.array(ar, dtype=np.float32).reshape((-1))
 
 
 def nan_omit(ar):
@@ -223,27 +271,63 @@ def one_hot(ar, class_array, class_column):
     return npar
 
 
-def cross_feature(ar, class_array, class_column, feature_columns):
-    npar = np.array(ar)
+def cross_feature(class_array, feature_array, fill=0, distinct_classes=None, distinct_feature_values=None):
+    assert len(class_array) == len(feature_array)
 
-    vec = npar[:, class_column]
+    ca = np.array(class_array).reshape((-1))
+    fa = np.array(feature_array).reshape((len(feature_array), -1))
 
-    ft = npar[:, feature_columns].reshape((len(npar),-1))
+    if distinct_feature_values is not None:
+        assert len(distinct_feature_values) == fa.shape[1]
 
+    c_feature = {'class_label': [], 'cross_feature': []}
 
-    classes = np.array(class_array)
+    if fill is None:
+        fill = np.nan
 
-    n_features = ft.shape[1]
+    if distinct_classes is None:
+        dc = np.unique(class_array)
+    else:
+        dc = np.unique(np.array(distinct_classes).reshape((-1)))
 
-    enc = np.zeros(shape=(len(npar), len(classes)*n_features), dtype=np.float32)
-    for i in range(len(vec)):
-        ind = np.argwhere(np.array(classes[:]) == npar[i, class_column]).ravel()
-        for j in range(n_features):
-            enc[i, (n_features*ind)+j] = npar[i, feature_columns[j]]
-    for i in range(len(classes)):
-        npar = np.insert(npar, len(npar[0,:]), values=enc[:, i], axis=1)
+    n_cross = 0
 
-    return npar
+    value_lookup = []
+    for i in range(fa.shape[1]):
+        if distinct_feature_values is not None:
+            dfv = np.unique(distinct_feature_values[i])
+        else:
+            dfv = np.unique(fa[:,i])
+
+        value_lookup.append({'offset': n_cross, 'values': dfv})
+        n_cross += len(dfv)
+
+    for i in range(len(ca)):
+        row = np.ones((n_cross*len(dc))) * fill
+
+        ind = np.argwhere(dc == ca[i]).ravel()
+        if len(ind) == 0:
+            raise LookupError('A class label exists in the data that is not defined within the distinct class labels')
+        ind = ind[0]
+
+        for j in range(n_cross):
+            row[(n_cross * ind) + j] = 0
+
+        for j in range(fa.shape[1]):
+            f_ind = np.argwhere(np.array(value_lookup[j]['values']) == fa[i,j]).ravel()
+            if len(f_ind) == 0:
+                raise LookupError(
+                    'A value exists in the data that is not defined within the distinct feature values')
+            f_ind = f_ind[0]
+
+            row[(n_cross * ind) + value_lookup[j]['offset'] + f_ind] = 1
+
+        c_feature['class_label'].append(ca[i])
+        c_feature['cross_feature'].append(row)
+
+    c_feature['class_label'] = np.array(c_feature['class_label'])
+    c_feature['cross_feature'] = np.array(c_feature['cross_feature'])
+    return c_feature
 
 
 def print_descriptives(ar, headers=None, desc_level=1):
@@ -265,7 +349,7 @@ def print_descriptives(ar, headers=None, desc_level=1):
             h = ''.join(list(h)[:15]) + '...'
         label = "Column {}".format(i) if headers is None else h
         dtype = ['int','float','string'][np.array(np.where(
-            np.array(['int','double precision','text'])[:] == infer_basic_type(np.unique(ar[:, i]), 1000))).reshape((-1))[0]]
+            np.array(['integer','double precision','text'])[:] == infer_basic_type(np.unique(ar[:, i]), 1000))).reshape((-1))[0]]
         label = "{} ({}):".format(label,dtype)
 
         if dtype == 'string':
@@ -301,7 +385,6 @@ def ndims(ar):
     return d
 
 
-
 def db_connect(db_name, user, password='', host='127.0.0.1', port='5432'):
     try:
         return pg.connect(dbname=db_name, user=user, password=password, host=host, port=port)
@@ -312,9 +395,13 @@ def db_connect(db_name, user, password='', host='127.0.0.1', port='5432'):
 def db_query(db_object, query, arguments=None):
     assert type(arguments) is dict or arguments is None
 
+    if arguments is not None:
+        for k in arguments:
+            query = query.replace(str(k),arguments[k])
+
     cur = db_object.cursor()
     try:
-        cur.execute(query, arguments)
+        cur.execute(query)
     except Exception:
         import traceback
         print('\033[91m')
@@ -343,8 +430,8 @@ class TableBuilder:
             assert not self.__primary
             self.__primary = True
 
-        assert type in ['int', 'bigint', 'double precision', 'text', 'timestamp'] # limited data type support
-        self.fields.append({'name': name if not primary else 'id',
+        assert type in ['integer', 'bigint', 'double precision', 'text', 'timestamp'] # limited data type support
+        self.fields.append({'name': name.replace(' ', '_') if not primary else 'id',
                             'type': type if not primary else 'bigint',
                             'primary': primary,
                             'values': []})
@@ -407,8 +494,11 @@ def db_write_from_csv(filename, db_object, table=None, primary_column=None):
     with open(filename, 'r', errors='ignore') as f:
         f_lines = f.readlines()
         n_lines = len(f_lines)
-        sys.stdout.write('-- loading {}...({}%)'.format(filename,0))
+        output_str = '-- loading {}...({}%)'.format(filename, 0)
+        sys.stdout.write(output_str)
         sys.stdout.flush()
+        old_str = output_str
+
         for i in range(1, n_lines):
             line = f_lines[i].strip()
 
@@ -441,7 +531,9 @@ def db_write_from_csv(filename, db_object, table=None, primary_column=None):
             for j in range(len(csvalues)):
                 csvalues[j] = csvalues[j].replace('<comma>', ',')
                 csvalues[j] = csvalues[j].replace('<apostrophe>', '\'\'')
-                if table.num_fields == len(csvalues) and table.fields[j]['type'] in ['text', 'timestamp']:
+
+                if table.num_fields == len(csvalues) + (1 if primary_column is None else 0) \
+                        and table.fields[j + (1 if primary_column is None else 0)]['type'] in ['text', 'timestamp']:
                     val += '\'' + csvalues[j] + '\''
                 elif csvalues[j] == '' or csvalues[j] is None:
                     val += 'NULL'
@@ -453,14 +545,20 @@ def db_write_from_csv(filename, db_object, table=None, primary_column=None):
 
             query += val
             if not round((i/n_lines)*100, 2) == round(((i-1)/n_lines)*100, 2):
-                sys.stdout.write('\r-- loading {}...({}%)'.format(filename, round((i/n_lines)*100,2)))
+                sys.stdout.write('\r' + (' ' * len(old_str)))
+                output_str = '\r-- loading {}...({}%)'.format(filename, round((i / n_lines) * 100, 2))
+                sys.stdout.write(output_str)
                 sys.stdout.flush()
+                old_str = output_str
+
                 query += ';'
                 db_query(db_object, query)
                 query = 'INSERT INTO ' + table.name + ' VALUES '
             else:
                 query += ', ' if i < n_lines - 1 else ';'
-        sys.stdout.write('\r-- loading {}...({}%)\n'.format(filename, 100))
+        sys.stdout.write('\r' + (' ' * len(old_str)))
+        output_str = '\r-- loading {}...({}%)'.format(filename, 100)
+        sys.stdout.write(output_str)
         sys.stdout.flush()
 
         if query[-1] == ';':
@@ -518,3 +616,169 @@ def db_write(df, db_object, table, append=False):
 
     db_query(db_object, query)
     print('-- {} rows inserted into {}'.format(df.shape[0],table.name))
+
+
+def median_absolute_deviation(ar):
+    ar = np.array(ar, dtype=np.float32)
+
+    med = np.nanmedian(ar)
+    return np.nanmean(np.abs(ar-med))
+
+
+class Split:
+    MEAN = 'mean'
+    MEDIAN = 'median'
+    MIN = 'min'
+    MAX = 'max'
+
+
+class Transforms:
+    NONE = 'identity'
+    COPY = 'copy'
+    LOG = 'log'
+    ROOT = 'root'
+    ZSCORE = 'zscore'
+    MZSCORE = 'mod_zscore'
+    WINSORIZE = 'winsor'
+    DICHOTOMIZE = 'bin'
+    OFFSET = 'offset'
+    INVERSE = 'inverse'
+
+    @staticmethod
+    def copy(df, column):
+        return np.array(df)[:, column]
+
+    @staticmethod
+    def log(df, column):
+        cov = as_float(df[:, column])
+        return np.log(cov)
+
+    @staticmethod
+    def root(df, column):
+        cov = as_float(df[:, column])
+        return np.sqrt(cov)
+
+    @staticmethod
+    def zscore(df, column):
+        cov = as_float(df[:, column])
+        return (cov-np.nanmean(cov))/np.nanstd(cov)
+
+    @staticmethod
+    def modified_zscore(df, column):
+        cov = as_float(df[:, column])
+        MAD = median_absolute_deviation(cov)
+        const = 1.253314 if MAD == 0 else 1.486
+        return (cov - np.nanmedian(cov)) / (MAD * const)
+
+    @staticmethod
+    def winsorize(df, column, min=None, max=None):
+        cov = as_float(df[:, column])
+        if min is not None:
+            cov[np.argwhere(np.array(cov[:]) < min)] = min
+        if max is not None:
+            cov[np.argwhere(np.array(cov[:]) > max)] = max
+        return cov
+
+    @staticmethod
+    def dichotomize(df, column, split):
+        cov = as_float(df[:, column])
+
+        val = None
+        try:
+            val = float(split)
+        except ValueError:
+            if split == Split.MEAN:
+                val = np.nanmean(cov)
+            elif split == Split.MEDIAN:
+                val = np.nanmedian(cov)
+            elif split == Split.MIN:
+                val = np.nanmin(cov)
+            elif split == Split.MAX:
+                val = np.nanmax(cov)
+
+        if val is None:
+            raise ValueError('Unrecognized split method')
+
+        nan = np.argwhere(np.array(cov,dtype=str) == 'nan').ravel()
+        cov = np.array(cov == val, dtype=np.float32)
+        if len(nan) > 0:
+            cov[nan] = float('nan')
+        return cov
+
+    @staticmethod
+    def offset(df, column, value):
+        cov = as_float(df[:, column]) + value
+        return cov
+
+    @staticmethod
+    def inverse(df, column, split):
+        cov = as_float(df[:, column])
+
+        val = None
+        try:
+            val = float(split)
+        except ValueError:
+            if split == Split.MEAN:
+                val = np.nanmean(cov)
+            elif split == Split.MEDIAN:
+                val = np.nanmedian(cov)
+            elif split == Split.MIN:
+                val = np.nanmin(cov)
+            elif split == Split.MAX:
+                val = np.nanmax(cov)
+
+        if val is None:
+            raise ValueError('Unrecognized split method')
+
+        nan = np.argwhere(np.array(cov, dtype=str) == 'nan').ravel()
+        dif = np.array(cov - val, dtype=np.float32)
+        cov = (np.ones(cov.shape) * val) - dif
+
+        if len(nan) > 0:
+            cov[nan] = float('nan')
+        return cov
+
+    def __init__(self, df, headers):
+        self.__transforms = {
+            'copy': Transforms.copy,
+            'log': Transforms.log,
+            'root': Transforms.root,
+            'zscore': Transforms.zscore,
+            'mod_zscore': Transforms.modified_zscore,
+            'winsor': Transforms.winsorize,
+            'bin': Transforms.dichotomize,
+            'offset': Transforms.offset,
+            'inverse': Transforms.inverse,
+        }
+
+        self.__df = np.array(df)
+        self.__headers = np.array(headers, dtype=np.dtype('U255'))
+        assert (len(df.shape) == 2 and len(headers.shape) == 1 and df.shape[1] == len(headers))
+
+        self.__modified = []
+
+    def apply(self, transform, column, **args):
+        if transform == Transforms.NONE:
+            return self
+
+        feed_dict = {'df': self.__df, 'column': column}
+
+        if column == -1:
+            self.__modified[-1] = self.__df.shape[1]
+        else:
+            self.__modified.append(self.__df.shape[1])
+
+        for i in args:
+            feed_dict[i] = args[i]
+
+        self.__df = np.insert(self.__df, self.__df.shape[1], self.__transforms[transform](**feed_dict), axis=1)
+        self.__headers = np.insert(self.__headers, len(self.__headers),
+                            str(transform) + '_' + str(np.array(self.__headers[column]))).reshape((-1))
+        return self
+
+    def get(self):
+        return self.__df, self.__headers
+
+    def get_modified_columns(self):
+        return self.__modified
+
