@@ -3,6 +3,7 @@ import tensorflow as tf
 from datautility import deprecated
 import datautility as du
 import evaluationutility as eu
+import visualizationutility as vu
 import time
 
 
@@ -20,6 +21,10 @@ class Cost:
     RMSE = 'rmse'
 
 
+class Optimizer:
+    SGD = 'sgd'
+    ADAM = 'adam'
+    ADAGRAD = 'adagrad'
 
 class Network:
 
@@ -42,6 +47,8 @@ class Network:
         self.__output_layers = []
         self.__output_weights = []
 
+        self.optimizer = Optimizer.SGD
+
         self.__tmp_multi_out = None
 
         self.deepest_hidden_layer = None
@@ -54,11 +61,14 @@ class Network:
 
         self.graph = tf.get_default_graph()
 
-        # self.session = tf.InteractiveSession(config=tf.ConfigProto(device_count={'GPU': 0}))  # use CPU
-        self.session = tf.InteractiveSession()  # use GPU
+        self.session = tf.InteractiveSession(config=tf.ConfigProto(device_count={'GPU': 0}))  # use CPU
+        # self.session = tf.InteractiveSession()  # use GPU
 
     def set_default_cost_method(self, cost_method=Cost.MSE):
         self.cost_method = cost_method
+
+    def set_optimizer(self, optimizer=Optimizer.SGD):
+        self.optimizer = optimizer
 
     def get_deepest_hidden_layer(self):
         return self.deepest_hidden_layer
@@ -477,8 +487,8 @@ class Network:
         layer['param']['b'] = tf.Variable(tf.zeros([layer['n']]))
 
         bsize = tf.shape(self.layers[-1]['h'])[0]
-        layer['z'] = tf.matmul(tf.nn.dropout(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]), layer['param']['arg']),
-                               layer['param']['w']) + layer['param']['b']
+        layer['z'] = tf.matmul(tf.nn.dropout(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
+                                             layer['param']['arg']), layer['param']['w']) + layer['param']['b']
         layer['a'] = activation
         layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, n]))
         self.layers.insert(max(0, len(self.layers)), layer)
@@ -509,13 +519,43 @@ class Network:
                 method = self.__cost[i]
 
                 if method == Cost.CROSS_ENTROPY:
-                    sum_cross_entropy = -tf.reduce_sum(
-                        tf.where(tf.is_nan(out_y), self.__outputs[i], out_y) * tf.log(self.__outputs[i]),
-                        reduction_indices=[-1])
-                    sce = tf.reduce_sum(tf.where(tf.is_nan(sum_cross_entropy), tf.zeros_like(sum_cross_entropy),
-                                                 sum_cross_entropy))
-                    cost_fn = sce/(tf.cast(tf.count_nonzero(sum_cross_entropy),
-                                           tf.float32)+tf.constant(1e-8, dtype=tf.float32))
+                    # sum_cross_entropy = -tf.reduce_sum(
+                    #     tf.where(tf.is_nan(out_y), self.__outputs[i]['h'], out_y) * tf.log(self.__outputs[i]['h']),
+                    #     reduction_indices=[-1])
+                    # sce = tf.reduce_sum(tf.where(tf.is_nan(sum_cross_entropy), tf.zeros_like(sum_cross_entropy),
+                    #                              sum_cross_entropy))
+                    # cost_fn = sce/(tf.cast(tf.count_nonzero(sum_cross_entropy),
+                    #                        tf.float32)+tf.constant(1e-4, dtype=tf.float32))
+                    # cost_fn = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.where(tf.is_nan(out_y[0]),
+                    #                                                                       tf.zeros_like(out_y[0]),
+                    #                                                                       out_y[0]),
+                    #                                                       logits=tf.where(tf.is_nan(out_y[0]),
+                    #                                                                       tf.zeros_like(out_y[0]),
+                    #                                                                       self.__outputs[i]['z'])))
+
+
+                    y_flat = tf.reshape(out_y, (-1, self.layers[self.__output_layers[i]]['n']))
+                    z_flat = tf.reshape(self.layers[self.__output_layers[i]]['z'], (-1, self.layers[self.__output_layers[i]]['n']))
+
+                    non_nan = tf.where(tf.logical_not(tf.is_nan(y_flat)))
+
+                    if 'sigmoid' in str(self.layers[self.__output_layers[i]]['a']):
+                        cost_fn = tf.reduce_mean(
+                            tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.gather_nd(y_flat, non_nan),
+                                                                    logits=tf.gather_nd(z_flat, non_nan)))
+                    else:
+                        cost_fn = tf.reduce_mean(
+                            tf.nn.softmax_cross_entropy_with_logits(labels=tf.gather_nd(y_flat, non_nan),
+                                                                    logits=tf.gather_nd(z_flat, non_nan)))
+
+                    cost_fn = tf.where(tf.is_nan(cost_fn), tf.zeros_like(cost_fn), cost_fn)
+                    # self.debug1 = tf.losses.sigmoid_cross_entropy(tf.gather_nd(y_flat, tf.where(tf.logical_not(tf.is_nan(y_flat)))),
+                    #                                           logits=tf.gather_nd(z_flat, tf.where(tf.logical_not(tf.is_nan(y_flat)))))
+                    # self.debugn = tf.gather_nd(z_flat, tf.where(tf.logical_not(tf.is_nan(y_flat))))
+                    # self.debugc = cost_fn
+                    # self.debug2 = cost_fn
+
+                    # cost_fn = self.debugc
 
                 elif method == Cost.L2_NORM:
                     sq_dif = tf.squared_difference(self.__outputs[i], tf.where(tf.is_nan(out_y),
@@ -548,7 +588,13 @@ class Network:
 
                 self.y.append(out_y)
 
-            self.update = tf.train.AdamOptimizer(self.step_size, name='update')
+            if self.optimizer == Optimizer.ADAM:
+                self.update = tf.train.AdamOptimizer(self.step_size, name='update')
+            elif self.optimizer == Optimizer.ADAGRAD:
+                self.update = tf.train.AdagradOptimizer(self.step_size, name='update')
+            else:
+                self.update = tf.train.GradientDescentOptimizer(self.step_size, name='update')
+
             self.minimize_cost = self.update.minimize(self.cost_function)
 
             self.var_grads = self.update.compute_gradients(self.cost_function, tf.trainable_variables())
@@ -609,7 +655,11 @@ class Network:
         cost, _ = self.session.run([self.cost_function, self.update_weights], feed_dict=self.args)
         # print(cost)
         # if cost == float('nan') or np.isnan(cost):
-        # print('output',self.session.run(self.__outputs,feed_dict=self.args))
+        # print('debug1', self.session.run(self.debug1, feed_dict=self.args))
+        # print('debugn', self.session.run(self.debugn, feed_dict=self.args))
+        # print('debugc', self.session.run(self.debugc, feed_dict=self.args))
+        # print('debug2', self.session.run(self.debug2, feed_dict=self.args))
+
         # print('labels',series_label_padded)
         # print('maybe',self.session.run(self.maybe,feed_dict=self.args))
         # print('cost',self.session.run(self.cost_function, feed_dict=self.args))
@@ -627,10 +677,12 @@ class Network:
             # TODO: if data is passed as wrong shape, reformat
             # TODO: ensure validation data also has correct format/shape
 
+        self.__training_cost = []
         use_validation = False
 
         if validation_labels is not None and validation_data is not None:
             use_validation = True
+            self.__validation_cost = []
             # v_labels = np.array(flatten_sequence(validation_labels, True))
 
         self.step_size = step
@@ -653,38 +705,45 @@ class Network:
         print("-{} epochs".format(max_epochs))
         print("-step size = {}".format(step))
         print("-batch size = {}".format(batch))
-        print("{:=<40}".format(''))
-        # TODO: include validation cost when using validation set
-        print("{:<10}{:^10}{:>10}".format("Epoch", "Cost", "Time"))
-        print("{:=<40}".format(''))
+
+        if not use_validation:
+            print("{:=<40}".format(''))
+            print("{:<10}{:^10}{:>10}".format("Epoch", "Cost", "Time"))
+            print("{:=<40}".format(''))
+        else:
+            print("{:=<50}".format(''))
+            print("{:<10}{:^10}{:^10}{:>10}".format("Epoch", "Cost", "Val Cost", "Time"))
+            print("{:=<50}".format(''))
+
 
         if self.normalization == Normalization.Z_SCORE:
-            self.args[self.layers[0]['param']['arg']['stat1']] = np.mean(np.hstack([np.array(i).ravel() for i in x])
+            self.args[self.layers[0]['param']['arg']['stat1']] = np.nanmean(np.hstack([np.array(i).ravel() for i in x])
                                                                          .reshape((-1, np.array(x[0]).shape[1])),
                                                                          axis=0).reshape((-1))
-            self.args[self.layers[0]['param']['arg']['stat2']] = np.std(np.hstack([np.array(i).ravel() for i in x])
+            self.args[self.layers[0]['param']['arg']['stat2']] = np.nanstd(np.hstack([np.array(i).ravel() for i in x])
                                                                         .reshape((-1, np.array(x[0]).shape[1])),
                                                                         axis=0).reshape((-1))
         elif self.normalization == Normalization.MAX:
-            self.args[self.layers[0]['param']['arg']['stat1']] = np.max(np.hstack([np.array(i).ravel() for i in x])
+            self.args[self.layers[0]['param']['arg']['stat1']] = np.nanmax(np.hstack([np.array(i).ravel() for i in x])
                                                                         .reshape((-1, np.array(x[0]).shape[1])),
                                                                         axis=0).reshape((-1))
-            self.args[self.layers[0]['param']['arg']['stat2']] = np.min(np.hstack([np.array(i).ravel() for i in x])
+            self.args[self.layers[0]['param']['arg']['stat2']] = np.nanmin(np.hstack([np.array(i).ravel() for i in x])
                                                                         .reshape((-1, np.array(x[0]).shape[1])),
                                                                         axis=0).reshape((-1))
 
         train_start = time.time()
 
         e = 1
+        e_cost = []
         while True:
             epoch_start = time.time()
 
-            # v = list(range(x.shape[0]))
-            # np.random.shuffle(v)
-            # x = x[v]
-            # y = y[v]
-
+            v = list(range(x.shape[0]))
+            np.random.shuffle(v)
+            x = x[v]
+            y = y[v]
             cost = []
+
             for i in range(0, x.shape[0], batch):
                 s = np.array(range(i, min(x.shape[0], i + batch)))
                 if len(s) < batch:
@@ -711,33 +770,37 @@ class Network:
                     self.minimize_cost.run(feed_dict=self.args)
                     cost.append(self.get_cost(x[s], y[s], False))
 
-            if e > 1:
-                mean_last_ten = np.mean(cost[-10:])
+            if use_validation:
+                e_cost.append(self.get_cost(validation_data,validation_labels,True))
+            else:
+                e_cost.append(np.nanmean(cost))
+
+            m_avg_dist = 10
+            if e > m_avg_dist+1:
+                mean_last_ten = np.mean(e_cost[(-1*(m_avg_dist+1)):-1])
             else:
                 mean_last_ten = 0
 
+            self.__training_cost.append(np.nanmean(cost))
 
-            # TODO: print validation cost in addition to training when using validation set
-            print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.nanmean(cost),
-                                                    time.time() - epoch_start))
+            if not use_validation:
+                print("{:<10}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), e_cost[-1],
+                                                        time.time() - epoch_start))
+            else:
+                self.__validation_cost.append(e_cost[-1])
+                print("{:<10}{:^10.4f}{:^10.4f}{:>9.1f}s".format("Epoch " + str(e), np.nanmean(cost), e_cost[-1],
+                                                        time.time() - epoch_start))
 
-            # TODO: use validation set in stopping criterion when using validation set
-            # if use_validation:
-            #     v_predictions = np.array(flatten_sequence(self.predict(validation_data), True))
-            #     current_auc = auc(v_labels,v_predictions)
-            #     if current_auc >= 0.5 : # current_best_auc:
-            #         current_best_auc = current_auc
-            #     else:
-            #         break
-            # else:
-            #     if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
-            #         break
-
-            if (0.0001 < abs(np.mean(cost[-10:]) - mean_last_ten) < threshold) or e >= max_epochs:
+            t = float(threshold)
+            # print(np.abs(np.mean(e_cost[-m_avg_dist:]) - mean_last_ten))
+            if (e > m_avg_dist + 1 and np.abs(np.mean(e_cost[-m_avg_dist:]) - mean_last_ten) < t) or e >= max_epochs:
                 break
             e += 1
 
-        print("{:=<40}".format(''))
+        if not use_validation:
+            print("{:=<40}".format(''))
+        else:
+            print("{:=<50}".format(''))
         print("Total Time: {:<.1f}s".format(time.time() - train_start))
 
     def predict(self, x):
@@ -800,17 +863,53 @@ class Network:
             valid = np.argwhere(np.array([len(k) for k in x]) > 0).ravel()
             series_batch = x[valid]
 
-            samp_timestep = [len(k) for k in series_batch]
-            n_timestep = max(samp_timestep)
+            series_label = None
+            if not self.use_last:
+                series_label = y[valid]
+            n_timestep = max([len(k) for k in series_batch])
 
             series_batch_padded = np.array(
                 [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in series_batch])
 
-            arg[self.layers[0]['z']] = series_batch_padded.reshape((len(x), n_timestep, -1))
-        else:
-            arg[self.layers[0]['z']] = x
+            series_label_padded = []
 
-        return self.cost_function.eval(feed_dict=arg)
+            for i in range(len(series_label[0])):
+                series_label_padded.append(np.array(
+                    [np.pad(sl, ((0, n_timestep - len(sl)), (0, 0)), 'constant', constant_values=np.nan) for sl in
+                     np.array([a[i] for a in series_label])]).reshape((len(series_batch), n_timestep, -1)))
+
+            arg[self.layers[0]['z']] = series_batch_padded.reshape((len(series_batch), n_timestep, -1))
+
+            if not len(self.y) == len(series_label_padded):
+                raise IndexError('The number of output layers does not match the labels supplied')
+
+            for i in range(len(self.y)):
+                arg[self.y[i]] = series_label_padded[i]
+        else:
+            ys = []
+
+            for j in range(len(y[0])):
+                ys.append(np.array([a[j] for a in y]).reshape((len(y), 1, -1)))
+
+            arg[self.layers[0]['z']] = x.reshape((len(x), 1, -1))
+
+            if not len(self.y) == len(ys):
+                raise IndexError('The number of output layers does not match the labels supplied')
+
+            for j in range(len(self.y)):
+                arg[self.y[j]] = ys[j]
+
+        return self.session.run(self.cost_function, feed_dict=arg)
+
+    def get_training_series(self):
+
+        series = dict()
+        series['Training'] = self.__training_cost
+
+        if self.__validation_cost is not None:
+            series['Validation'] = self.__validation_cost
+
+        return series
 
 
 @deprecated
@@ -1448,7 +1547,7 @@ def loadAndReshape(lb):
     else:
         print('Wrong label.')
         exit(1)
-    data, labels = du.read_csv('labeled_compressed92features.csv')
+    data, labels = du.read_csv('resources/labeled_compressed92features.csv')
     du.print_descriptives(data,labels)
 
     seq = format_data(data, 1, [label],list(range(4,96)),3, True)
@@ -1467,15 +1566,18 @@ def run_experiments(lb):
     outputlabel = lb
 
     hidden = [200]
-    batch = [1]
+    batch = [2]
     layers = [1,2]
-    keep = [.3,.5, 1]
-    step = [0.0001, 0.00001]
+    keep = [.5]
+    step = [1e-5]
+    threshold = [-0.001]
+    optimizer = [Optimizer.ADAM, Optimizer.ADAGRAD]
     AE = [True, False]
-    FC = [True, False]
+    FC = [False]
 
-    headers = ['Hidden Nodes', 'Batch Size', 'Recurrent Layers', 'Keep Probability', 'Step Size', 'Auto Encoder',
-               'Fully Connected Layer', 'AUC', 'AUC SD', 'RMSE', 'RMSE SD', 'Training Time']
+    headers = ['Hidden Nodes', 'Batch Size', 'Recurrent Layers', 'Keep Probability', 'Step Size','Threshold',
+               'Optimizer', 'Auto Encoder', 'Fully Connected Layer', 'AUC', 'AUC SD', 'RMSE', 'RMSE SD',
+               'Training Time']
 
     seq = dict()
     n_folds = 5
@@ -1501,87 +1603,132 @@ def run_experiments(lb):
         seq['y'] = myOffset(seq['y'])
 
     output = []
+    best_perf = None
 
-    for a in AE:
-        for f in FC:
-            for l in layers:
-                for k in keep:
-                    for b in batch:
-                        for h in hidden:
-                            for s in step:
-                                if a and f:
-                                    continue
-                                start = time.time()
-                                tf.set_random_seed(0)
-                                np.random.seed(0)
+    for o in optimizer:
+        for a in AE:
+            for f in FC:
+                for l in layers:
+                    for k in keep:
+                        for b in batch:
+                            for h in hidden:
+                                for s in step:
+                                    for t in threshold:
+                                        if a and f:
+                                            continue
+                                        start = time.time()
+                                        tf.set_random_seed(0)
+                                        np.random.seed(0)
 
-                                fold = np.random.randint(0, n_folds, len(seq['x']))
+                                        fold = np.random.randint(0, n_folds, len(seq['x']))
 
-                                fold_auc = []
-                                fold_rmse = []
+                                        fold_auc = []
+                                        fold_rmse = []
 
-                                for i in range(n_folds):
-                                    tf.reset_default_graph()
+                                        training_series = None
 
-                                    training = np.argwhere(fold != i).ravel()
-                                    test_set = np.argwhere(fold == i).ravel()
+                                        pred_label = ['fold', 'predicted', 'actual']
+                                        model_pred = [[],[],[]]
 
-                                    if a:
-                                        T = seq['key'][training]
-                                        aetraining = []
-                                        for tt in T:
-                                            aetraining.extend(
-                                                np.argwhere(np.array(flat['key'], dtype=str) == str(tt)).ravel())
+                                        for i in range(n_folds):
+                                            tf.reset_default_graph()
 
-                                        ae = Network().add_input_layer(92, normalization=Normalization.NONE) \
-                                            .add_dense_layer(46, activation=tf.nn.tanh) \
-                                            .add_inverse_layer(layer_index=-1, activation=tf.nn.sigmoid)
-                                        ae.set_default_cost_method(Cost.L2_NORM)
+                                            training = np.argwhere(fold != i).ravel()
+                                            test_set = np.argwhere(fold == i).ravel()
 
-                                        ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=0.05,
-                                                 max_epochs=40,
-                                                 threshold=0.0001, batch=1)
+                                            ae = None
+                                            if a:
+                                                T = seq['key'][training]
+                                                aetraining = []
+                                                for tt in T:
+                                                    aetraining.extend(
+                                                        np.argwhere(np.array(flat['key'], dtype=str) == str(tt)).ravel())
 
-                                        net = Network().\
-                                            add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())
+                                                ae = Network().add_input_layer(92, normalization=Normalization.NONE) \
+                                                    .add_dense_layer(46, activation=tf.nn.tanh) \
+                                                    .add_inverse_layer(layer_index=-1, activation=tf.identity)
+                                                ae.set_default_cost_method(Cost.L2_NORM)
+                                                ae.set_optimizer(o)
 
-                                    else:
-                                        net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
+                                                ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=s,
+                                                         max_epochs=40,
+                                                         threshold=-0.001, batch=b)
 
-                                    if f:
-                                        net.add_dense_layer(46, activation=tf.nn.tanh)
+                                                net = Network().\
+                                                    add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())
 
-                                    for _ in range(l):
-                                        net.add_lstm_layer(h, activation=tf.identity)
+                                            else:
+                                                net = Network().add_input_layer(92, normalization=Normalization.NONE)
 
-                                    net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
+                                            if f:
+                                                net.add_dense_layer(46, activation=tf.nn.tanh)
 
-                                    net.set_default_cost_method(Cost.CROSS_ENTROPY)
+                                            for _ in range(l):
+                                                net.add_lstm_layer(h, activation=tf.nn.relu)
 
-                                    net.train(x=seq['x'][training], y=seq['y'][training], step=s,
-                                              max_epochs=40, threshold=0.0001, batch=b)
+                                            net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
 
-                                    pred = net.predict(x=seq['x'][test_set])
+                                            net.set_default_cost_method(Cost.CROSS_ENTROPY)
+                                            net.set_optimizer(o)
 
-                                    pred_flatten_sequence = flatten_sequence(pred[0]).ravel()
-                                    fold_auc.append(
-                                        Aprime(actual=my4dto2d(seq['y'][test_set]), predicted=pred_flatten_sequence))
-                                    fold_rmse.append(
-                                        eu.rmse(actual=my4dto2d(seq['y'][test_set]), predicted=pred_flatten_sequence))
+                                            hold = int(np.floor(len(training)*.2))
 
-                                auc = np.mean(fold_auc)
-                                s_auc = np.std(fold_auc)
-                                rmse = np.mean(fold_rmse)
-                                s_rmse = np.std(fold_rmse)
+                                            net.train(x=seq['x'][training[hold:]], y=seq['y'][training[hold:]], step=s,
+                                                      validation_data=seq['x'][training[:hold]],
+                                                      validation_labels=seq['y'][training[:hold]],
+                                                      max_epochs=40, threshold=t, batch=b)
 
-                                print("Average AUC: {:<.3f} ({:<.3f})".format(auc, s_auc))
-                                print("{:=<40}\n".format(''))
+                                            training_series = net.get_training_series()
 
-                                print("{:=<40}".format(''))
-                                print("Average RMSE: {:<.3f} ({:<.3f})".format(rmse, s_rmse))
+                                            vu.plot_lines(training_series, save_file='last_fold.png', show=False)
 
-                                output.append([h,b,l,k,s,a,f,auc,s_auc,rmse,s_rmse,time.time()-start])
-                                du.write_csv(output,'model_performance.csv',headers)
+                                            pred = net.predict(x=seq['x'][test_set])
+
+                                            pred_flatten_sequence = flatten_sequence(pred[0]).ravel()
+                                            actual = my4dto2d(seq['y'][test_set])
+
+                                            # print(du.ndims(actual))
+                                            # print(du.ndims(pred_flatten_sequence))
+
+                                            model_pred[0].extend(np.ones((len(actual))) * i)
+                                            model_pred[1].extend(pred_flatten_sequence)
+                                            model_pred[2].extend(actual)
+
+                                            du.write_csv(np.array(model_pred).T, 'model_predictions.csv', pred_label)
+
+                                            fold_auc.append(
+                                                Aprime(actual=actual, predicted=pred_flatten_sequence))
+                                            fold_rmse.append(
+                                                eu.rmse(actual=actual, predicted=pred_flatten_sequence))
+
+                                            print("{:=<40}\n".format(''))
+                                            print("Fold AUC: {:<.3f}".format(fold_auc[-1]))
+                                            print("Fold RMSE: {:<.3f}".format(fold_rmse[-1]))
+                                            print("Fold Cost: {:<.3f}".format(net.get_cost(seq['x'][test_set],
+                                                                                           seq['y'][test_set],True)))
+                                            print("{:=<40}\n".format(''))
+
+                                            net.session.close()
+                                            if ae is not None:
+                                                ae.session.close()
+
+                                        auc = np.mean(fold_auc)
+                                        s_auc = np.std(fold_auc)
+                                        rmse = np.mean(fold_rmse)
+                                        s_rmse = np.std(fold_rmse)
+
+                                        print("{:=<40}\n".format(''))
+                                        print("Average AUC: {:<.3f} ({:<.3f})".format(auc, s_auc))
+                                        print("Average RMSE: {:<.3f} ({:<.3f})".format(rmse, s_rmse))
+                                        print("{:=<40}".format(''))
+
+                                        agg_perf = ((2.*(float(auc>.5)*auc))-1) + (1-rmse)
+                                        if best_perf is None or (best_perf is not None and agg_perf > best_perf):
+                                            best_perf = agg_perf
+                                            vu.plot_lines(training_series,save_file='best_last_fold.png',show=False)
+
+                                        output.append([h, b, l, k, s, t, a, f, auc, s_auc, rmse, s_rmse, time.time()-start])
+                                        du.write_csv(output,'model_performance.csv',headers)
 
 
 if __name__ == "__main__":
@@ -1594,7 +1741,8 @@ if __name__ == "__main__":
     print('Label:',lb,'HiddenUnits:',hiddenUnits)
     from datetime import datetime
     print(str(datetime.now()))
-    #loadAndReshape(lb)
+    # loadAndReshape(lb)
+    # exit(1)
     # run_npc_test(lb,hiddenUnits,keepRate)
     run_experiments(lb)
     print(str(datetime.now()))
