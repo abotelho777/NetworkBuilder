@@ -5,6 +5,7 @@ import datautility as du
 import evaluationutility as eu
 import visualizationutility as vu
 import time
+import pickle
 
 
 class Normalization:
@@ -328,7 +329,7 @@ class Network:
                 return layer['z']
 
         shape = tf.shape(self.layers[-1]['h'])
-        init = tf.Variable(tf.zeros((1, layer['n'])))
+        init = tf.Variable(tf.ones((1, layer['n']))*0.5)
         lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'],[1,0,2]),
                          initializer=tf.reshape(tf.tile(init,[1, shape[0]]),[-1,layer['n']]))
 
@@ -520,7 +521,7 @@ class Network:
 
                 if method == Cost.CROSS_ENTROPY:
                     # sum_cross_entropy = -tf.reduce_sum(
-                    #     tf.where(tf.is_nan(out_y), self.__outputs[i]['h'], out_y) * tf.log(self.__outputs[i]['h']),
+                    #     tf.where(tf.is_nan(out_y), self.__outputs[i], out_y) * tf.log(self.__outputs[i]),
                     #     reduction_indices=[-1])
                     # sce = tf.reduce_sum(tf.where(tf.is_nan(sum_cross_entropy), tf.zeros_like(sum_cross_entropy),
                     #                              sum_cross_entropy))
@@ -533,7 +534,7 @@ class Network:
                     #                                                                       tf.zeros_like(out_y[0]),
                     #                                                                       self.__outputs[i]['z'])))
 
-
+                    ##
                     y_flat = tf.reshape(out_y, (-1, self.layers[self.__output_layers[i]]['n']))
                     z_flat = tf.reshape(self.layers[self.__output_layers[i]]['z'], (-1, self.layers[self.__output_layers[i]]['n']))
 
@@ -545,10 +546,22 @@ class Network:
                                                                     logits=tf.gather_nd(z_flat, non_nan)))
                     else:
                         cost_fn = tf.reduce_mean(
-                            tf.nn.softmax_cross_entropy_with_logits(labels=tf.gather_nd(y_flat, non_nan),
-                                                                    logits=tf.gather_nd(z_flat, non_nan)))
+                            tf.nn.softmax_cross_entropy_with_logits(
+                                labels=tf.reshape(tf.gather_nd(y_flat, non_nan),
+                                                  (-1, self.layers[self.__output_layers[i]]['n'])),
+                                logits=tf.reshape(tf.gather_nd(z_flat, non_nan),
+                                                  (-1, self.layers[self.__output_layers[i]]['n']))))
+                        # self.debug1 = tf.nn.softmax_cross_entropy_with_logits(
+                        #     labels=tf.reshape(tf.gather_nd(y_flat, non_nan),
+                        #                       (-1, self.layers[self.__output_layers[i]]['n'])),
+                        #     logits=tf.reshape(tf.gather_nd(y_flat, non_nan),
+                        #                       (-1, self.layers[self.__output_layers[i]]['n'])))
 
                     cost_fn = tf.where(tf.is_nan(cost_fn), tf.zeros_like(cost_fn), cost_fn)
+
+                    #
+
+
                     # self.debug1 = tf.losses.sigmoid_cross_entropy(tf.gather_nd(y_flat, tf.where(tf.logical_not(tf.is_nan(y_flat)))),
                     #                                           logits=tf.gather_nd(z_flat, tf.where(tf.logical_not(tf.is_nan(y_flat)))))
                     # self.debugn = tf.gather_nd(z_flat, tf.where(tf.logical_not(tf.is_nan(y_flat))))
@@ -646,11 +659,18 @@ class Network:
         if not len(self.y) == len(series_label_padded):
             raise IndexError('The number of output layers does not match the labels supplied')
 
+        nan_check = []
         for i in range(len(self.y)):
             self.args[self.y[i]] = series_label_padded[i]
+            nan_check.append(np.all(np.isnan(series_label_padded[i].ravel())))
+
+
+        if np.all(nan_check):
+            return None
 
         # print(self.session.run(self.layers[0]['h'], feed_dict=self.args))
         # exit(1)
+
 
         cost, _ = self.session.run([self.cost_function, self.update_weights], feed_dict=self.args)
         # print(cost)
@@ -751,6 +771,10 @@ class Network:
 
                 if self.recurrent:
                     batch_cost = self.__backprop_through_time(x, y, s)
+
+                    if batch_cost is None:
+                        continue
+
                     for j in batch_cost:
                         cost.append(j)
                 else:
@@ -775,7 +799,7 @@ class Network:
             else:
                 e_cost.append(np.nanmean(cost))
 
-            m_avg_dist = 10
+            m_avg_dist = 3
             if e > m_avg_dist+1:
                 mean_last_ten = np.mean(e_cost[(-1*(m_avg_dist+1)):-1])
             else:
@@ -1550,7 +1574,9 @@ def loadAndReshape(lb):
     data, labels = du.read_csv('resources/labeled_compressed92features.csv')
     du.print_descriptives(data,labels)
 
-    seq = format_data(data, 1, [label],list(range(4,96)),3, True)
+    seq = format_data(data, 1, [label],list(range(4,96)), 3, True)
+    # seq = format_data(data, 1, [101, 102, 103, 104], list(range(4, 96)), 3, True) # affect (check columns)
+    # seq = format_data(data, 1, [[96], [101, 102, 103, 104]], list(range(4, 96)), 3, True) # multi-label (check columns)
 
     np.save('seq_k_' + lb + '.npy', seq['key'])
     np.save('seq_x_' + lb + '.npy', seq['x'])
@@ -1565,14 +1591,17 @@ def loadAndReshape(lb):
 def run_experiments(lb):
     outputlabel = lb
 
+    max_epochs = 40
+    use_validation = False
+
     hidden = [200]
-    batch = [2]
-    layers = [1,2]
+    batch = [1]
+    layers = [1]
     keep = [.5]
-    step = [1e-5]
-    threshold = [-0.001]
-    optimizer = [Optimizer.ADAM, Optimizer.ADAGRAD]
-    AE = [True, False]
+    step = [1e-6]
+    threshold = [-1]
+    optimizer = [Optimizer.ADAM]
+    AE = [True]
     FC = [False]
 
     headers = ['Hidden Nodes', 'Batch Size', 'Recurrent Layers', 'Keep Probability', 'Step Size','Threshold',
@@ -1628,7 +1657,7 @@ def run_experiments(lb):
                                         training_series = None
 
                                         pred_label = ['fold', 'predicted', 'actual']
-                                        model_pred = [[],[],[]]
+                                        model_pred = [[], [], []]
 
                                         for i in range(n_folds):
                                             tf.reset_default_graph()
@@ -1647,12 +1676,19 @@ def run_experiments(lb):
                                                 ae = Network().add_input_layer(92, normalization=Normalization.NONE) \
                                                     .add_dense_layer(46, activation=tf.nn.tanh) \
                                                     .add_inverse_layer(layer_index=-1, activation=tf.identity)
-                                                ae.set_default_cost_method(Cost.L2_NORM)
+                                                ae.set_default_cost_method(Cost.MSE)
                                                 ae.set_optimizer(o)
 
-                                                ae.train(x=flat['x'][aetraining], y=flat['y'][aetraining], step=s,
-                                                         max_epochs=40,
-                                                         threshold=-0.001, batch=b)
+                                                hold = int(np.floor(len(aetraining) * .2)) if use_validation else 0
+
+                                                ae.train(x=flat['x'][training[hold:]], y=flat['y'][training[hold:]],
+                                                         step=0.0001,
+                                                         validation_data=flat['x'][
+                                                             aetraining[:hold]] if use_validation else None,
+                                                         validation_labels=flat['y'][
+                                                             aetraining[:hold]] if use_validation else None,
+                                                         max_epochs=max_epochs,
+                                                         threshold=t, batch=b)
 
                                                 net = Network().\
                                                     add_input_layer_from_network(ae, ae.get_deepest_hidden_layer_index())
@@ -1664,19 +1700,24 @@ def run_experiments(lb):
                                                 net.add_dense_layer(46, activation=tf.nn.tanh)
 
                                             for _ in range(l):
-                                                net.add_lstm_layer(h, activation=tf.nn.relu)
+                                                net.add_lstm_layer(h, activation=tf.identity, peepholes=True)
 
+                                            # net.begin_multi_output()
                                             net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
+                                            # net.add_dropout_layer(4, keep=k, activation=tf.nn.softmax) # affect
+                                            # net.end_multi_output()
 
                                             net.set_default_cost_method(Cost.CROSS_ENTROPY)
                                             net.set_optimizer(o)
 
-                                            hold = int(np.floor(len(training)*.2))
+                                            hold = int(np.floor(len(training)*.2)) if use_validation else 0
 
                                             net.train(x=seq['x'][training[hold:]], y=seq['y'][training[hold:]], step=s,
-                                                      validation_data=seq['x'][training[:hold]],
-                                                      validation_labels=seq['y'][training[:hold]],
-                                                      max_epochs=40, threshold=t, batch=b)
+                                                      validation_data=seq['x'][
+                                                          training[:hold]] if use_validation else None,
+                                                      validation_labels=seq['y'][
+                                                          training[:hold]] if use_validation else None,
+                                                      max_epochs=max_epochs, threshold=t, batch=b)
 
                                             training_series = net.get_training_series()
 
@@ -1697,7 +1738,9 @@ def run_experiments(lb):
                                             du.write_csv(np.array(model_pred).T, 'model_predictions.csv', pred_label)
 
                                             fold_auc.append(
-                                                Aprime(actual=actual, predicted=pred_flatten_sequence))
+                                                eu.auc(actual, pred_flatten_sequence, True)
+                                                # Aprime(actual=actual, predicted=pred_flatten_sequence)
+                                            )
                                             fold_rmse.append(
                                                 eu.rmse(actual=actual, predicted=pred_flatten_sequence))
 
@@ -1727,7 +1770,7 @@ def run_experiments(lb):
                                             best_perf = agg_perf
                                             vu.plot_lines(training_series,save_file='best_last_fold.png',show=False)
 
-                                        output.append([h, b, l, k, s, t, a, f, auc, s_auc, rmse, s_rmse, time.time()-start])
+                                        output.append([h, b, l, k, s, t, o, a, f, auc, s_auc, rmse, s_rmse, time.time()-start])
                                         du.write_csv(output,'model_performance.csv',headers)
 
 
@@ -1738,7 +1781,7 @@ if __name__ == "__main__":
     lb = 'npc'
     hiddenUnits = 200
     keepRate = 0.6
-    print('Label:',lb,'HiddenUnits:',hiddenUnits)
+    print('Label:', lb, 'HiddenUnits:', hiddenUnits)
     from datetime import datetime
     print(str(datetime.now()))
     # loadAndReshape(lb)
@@ -1748,4 +1791,4 @@ if __name__ == "__main__":
     print(str(datetime.now()))
     endtime = time.time()
     print('Label:', lb, 'HiddenUnits:', hiddenUnits)
-    print('Time cost: ',endtime-starttime)
+    print('Time cost: ', endtime-starttime)

@@ -9,6 +9,11 @@ def auc(actual, predicted, average_over_labels=True):
     ac = np.array(actual).reshape((len(actual),-1))
     pr = np.array(predicted).reshape((len(predicted),-1))
 
+    na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
+
+    ac = ac[na]
+    pr = pr[na]
+
     label_auc = []
     for i in range(ac.shape[-1]):
         a = np.array(ac[:,i])
