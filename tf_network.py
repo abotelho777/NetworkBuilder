@@ -48,6 +48,9 @@ class Network:
         self.__output_layers = []
         self.__output_weights = []
 
+        self.__training_cost = None
+        self.__validation_cost = None
+
         self.optimizer = Optimizer.SGD
 
         self.__tmp_multi_out = None
@@ -665,7 +668,7 @@ class Network:
             nan_check.append(np.all(np.isnan(series_label_padded[i].ravel())))
 
 
-        if np.all(nan_check):
+        if np.all(nan_check) or len(nan_check) == 0:
             return None
 
         # print(self.session.run(self.layers[0]['h'], feed_dict=self.args))
@@ -799,7 +802,7 @@ class Network:
             else:
                 e_cost.append(np.nanmean(cost))
 
-            m_avg_dist = 3
+            m_avg_dist = 5
             if e > m_avg_dist+1:
                 mean_last_ten = np.mean(e_cost[(-1*(m_avg_dist+1)):-1])
             else:
@@ -1450,6 +1453,143 @@ def my4dto2d(array):
     #return result
 
 
+def extract_from_multi_label(sequence_y, labels):
+    desc = describe_multi_label(sequence_y)
+
+    labels = np.array([labels]).ravel()
+
+    if max(labels) >= desc['n_label_sets']:
+        raise ValueError('The label index is larger than the number of label sets.')
+
+    seq_y = []
+
+    for i in range(desc['n_samples']):
+        set = dict()
+        for j in range(len(labels)):
+            set[j] = sequence_y[i][labels[j]]
+        seq_y.append(set)
+
+    return np.array(seq_y)
+
+
+def merge_multi_label(sequence_y1, sequence_y2=None):
+    desc1 = describe_multi_label(sequence_y1)
+
+    if sequence_y2 is not None:
+        desc2 = describe_multi_label(sequence_y2)
+
+        if not desc1['n_samples'] == desc2['n_samples']:
+            raise ValueError('The sequence labels must have an equal number of samples to merge.')
+
+        seq_y = []
+
+        for i in range(desc1['n_samples']):
+            set = dict()
+            for j in range(desc1['n_label_sets']):
+                set[j] = sequence_y1[i][j]
+            for j in range(desc2['n_label_sets']):
+                set[desc1['n_label_sets'] + j] = sequence_y2[i][j]
+
+            seq_y.append(set)
+    else:
+        seq_y = []
+
+        for i in range(desc1['n_samples']):
+            set = dict()
+            lb_seq = None
+            for j in range(desc1['n_label_sets']):
+                if lb_seq is None:
+                    lb_seq = sequence_y1[i][j]
+                else:
+                    lb_seq = np.append(lb_seq, sequence_y1[i][j], axis=1)
+
+            set[0] = lb_seq
+
+            seq_y.append(set)
+
+    return np.array(seq_y)
+
+
+def one_hot_multi_label(sequence_y, labels):
+    desc = describe_multi_label(sequence_y)
+
+    labels = np.array([labels]).ravel()
+
+    if max(labels) >= desc['n_label_sets']:
+        raise ValueError('The label index is larger than the number of label sets.')
+
+    for i in labels:
+        if not desc['n_labels'][i] == 1:
+            raise ValueError('The supplied label {} has a length of {}. A one-hot encoding can '
+                             'only be applied to labels of size 1.'.format(i, desc['n_labels'][i]))
+
+    flat_lb = flatten_sequence(extract_from_multi_label(sequence_y, labels))
+
+    cl = []
+    for i in range(len(labels)):
+        u = np.unique(flat_lb[:,i])
+        u = u[np.argwhere(1-np.isnan(u)).ravel()]
+        cl.append(u)
+
+    seq_y = []
+
+    for i in range(desc['n_samples']):
+        set = dict()
+        for j in range(desc['n_label_sets']):
+            if j in labels:
+                seq_lb = []
+                for k in sequence_y[i][labels[j]]:
+                    seq_lb.append(np.array([int(k[0] == cl[j][s]) for s in range(len(cl[j]))]))
+                set[j] = seq_lb
+            else:
+                set[j] = sequence_y[i][j]
+        seq_y.append(set)
+
+    return np.array(seq_y)
+
+
+def ravel_multi_label(sequence_y):
+    desc = describe_multi_label(sequence_y)
+
+    seq_y = []
+
+    for i in range(desc['n_samples']):
+        set = dict()
+        ind = 0
+
+        for j in range(desc['n_label_sets']):
+            for k in range(desc['n_labels'][j]):
+                set[ind] = np.array(sequence_y[i][j][:,k]).reshape((-1,1))
+                ind += 1
+
+        seq_y.append(set)
+
+    return np.array(seq_y)
+
+
+def describe_multi_label(sequence_y, print_description=False):
+    desc = dict()
+
+    desc['n_samples'] = len(sequence_y)
+    desc['n_label_sets'] = len(sequence_y[0])
+    desc['n_labels'] = []
+    for i in range(desc['n_label_sets']):
+        desc['n_labels'].append(len(sequence_y[0][i][0]))
+
+    if print_description:
+        print("{:=<40}".format(''))
+        print("{:=<40}".format('======  Label Description  '))
+        print("{:=<40}".format(''))
+        print("-- Number of Samples: {}".format(desc['n_samples']))
+        print("-- Number of Label Sets: {}".format(desc['n_label_sets']))
+        for i in range(desc['n_label_sets']):
+            print("---- {}: {} Label{}".format(str(i+1), desc['n_labels'][i],
+                                               '' if desc['n_labels'][i] == 1 else 's'))
+
+        print("{:=<40}\n".format(''))
+
+    return desc
+
 
 def myOffset(y,label=0):
     result = np.array(y)
@@ -1559,47 +1699,60 @@ def run_npc_test(lb,hiddenUnits,keepRate):
 
 
 def loadAndReshape(lb):
-    label = 96
-    if lb == 'npc':
-        label = 96
-    elif lb == 'fa':
-        label = 97
-    elif lb == 'ws':
-        label = 100
-    elif lb == 'rc':
-        label = 99
-    else:
-        print('Wrong label.')
-        exit(1)
+
+    lb = np.array(lb)
+    label = []
+    lb_name = ''
+    for i in lb:
+        if i == 'npc':
+            label.append([96])
+        elif i == 'fa':
+            label.append([97])
+        elif i == 'ws':
+            label.append([100])
+        elif i == 'rc':
+            label.append([99])
+        elif i == 'af':
+            label.append([101, 102, 103, 104])
+        else:
+            print('Wrong label.')
+            exit(1)
+
+        lb_name += ('_' if len(label) > 1 else '') + i
+
     data, labels = du.read_csv('resources/labeled_compressed92features.csv')
     du.print_descriptives(data,labels)
 
-    seq = format_data(data, 1, [label],list(range(4,96)), 3, True)
+    seq = format_data(data, 1, label, list(range(4,96)), 3, True)
     # seq = format_data(data, 1, [101, 102, 103, 104], list(range(4, 96)), 3, True) # affect (check columns)
     # seq = format_data(data, 1, [[96], [101, 102, 103, 104]], list(range(4, 96)), 3, True) # multi-label (check columns)
 
-    np.save('seq_k_' + lb + '.npy', seq['key'])
-    np.save('seq_x_' + lb + '.npy', seq['x'])
-    np.save('seq_y_' + lb + '.npy', seq['y'])
+    np.save('seq_k_' + lb_name + '.npy', seq['key'])
+    np.save('seq_x_' + lb_name + '.npy', seq['x'])
+    np.save('seq_y_' + lb_name + '.npy', seq['y'])
 
     flat = format_data(data, 1, list(range(4,96)),list(range(4,96)),3, False)
-    np.save('flat_k_' + lb + '.npy', flat['key'])
-    np.save('flat_x_' + lb + '.npy', flat['x'])
-    np.save('flat_y_' + lb + '.npy', flat['y'])
+    np.save('flat_k_' + lb_name + '.npy', flat['key'])
+    np.save('flat_x_' + lb_name + '.npy', flat['x'])
+    np.save('flat_y_' + lb_name + '.npy', flat['y'])
 
 
 def run_experiments(lb):
-    outputlabel = lb
+    outputlabel = ''
+
+    lb = np.array(lb)
+    for i in lb:
+        outputlabel += ('_' if not outputlabel == '' else '') + i
 
     max_epochs = 40
     use_validation = False
 
     hidden = [200]
-    batch = [1]
+    batch = [2]
     layers = [1]
     keep = [.5]
-    step = [1e-6]
-    threshold = [-1]
+    step = [1e-4]
+    threshold = [-0.001]
     optimizer = [Optimizer.ADAM]
     AE = [True]
     FC = [False]
@@ -1613,8 +1766,13 @@ def run_experiments(lb):
 
     x = np.load('seq_x_' + outputlabel + '.npy')
     y = np.load('seq_y_' + outputlabel + '.npy')
+
     seq['x'] = np.array(x)
     seq['y'] = np.array(y)
+    # seq['y'] = extract_from_multi_label(np.array(y), 4)
+    # describe_multi_label(seq['y'], True)
+    # describe_multi_label(one_hot_multi_label(seq['y'], [0,1,2,3]), True)
+    # exit(1)
 
     k = np.load('seq_k_' + outputlabel + '.npy')
     seq['key'] = np.array(k)
@@ -1627,6 +1785,10 @@ def run_experiments(lb):
     flat['key'] = np.array(flatk)
     flat['x'] = np.array(flatx)
     flat['y'] = np.array(flaty)
+
+    desc = describe_multi_label(seq['y'], True)
+
+    # exit(1)
 
     if outputlabel == 'npc' or outputlabel == 'fa':
         seq['y'] = myOffset(seq['y'])
@@ -1651,13 +1813,17 @@ def run_experiments(lb):
 
                                         fold = np.random.randint(0, n_folds, len(seq['x']))
 
-                                        fold_auc = []
-                                        fold_rmse = []
+
+                                        lb_size = np.sum(desc['n_labels'])+np.sum([lbd > 1 for lbd in desc['n_labels']])
+                                        fold_auc = [[] for lb_set in range(lb_size)]
+                                        fold_rmse = [[] for lb_set in range(lb_size)]
 
                                         training_series = None
 
                                         pred_label = ['fold', 'predicted', 'actual']
                                         model_pred = [[], [], []]
+
+                                        overall_pred = None
 
                                         for i in range(n_folds):
                                             tf.reset_default_graph()
@@ -1702,10 +1868,15 @@ def run_experiments(lb):
                                             for _ in range(l):
                                                 net.add_lstm_layer(h, activation=tf.identity, peepholes=True)
 
-                                            # net.begin_multi_output()
-                                            net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
+                                            net.begin_multi_output()
+                                            # net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
+                                            for lab_set in desc['n_labels']:
+                                                activation = tf.nn.softmax if lab_set > 1 else tf.nn.sigmoid
+                                                net.add_dropout_layer(lab_set, keep=k, activation=activation)
+
+
                                             # net.add_dropout_layer(4, keep=k, activation=tf.nn.softmax) # affect
-                                            # net.end_multi_output()
+                                            net.end_multi_output()
 
                                             net.set_default_cost_method(Cost.CROSS_ENTROPY)
                                             net.set_optimizer(o)
@@ -1719,66 +1890,147 @@ def run_experiments(lb):
                                                           training[:hold]] if use_validation else None,
                                                       max_epochs=max_epochs, threshold=t, batch=b)
 
-                                            training_series = net.get_training_series()
+                                            # training_series = net.get_training_series()
 
-                                            vu.plot_lines(training_series, save_file='last_fold.png', show=False)
+                                            # vu.plot_lines(training_series, save_file='last_fold.png', show=False)
 
                                             pred = net.predict(x=seq['x'][test_set])
 
-                                            pred_flatten_sequence = flatten_sequence(pred[0]).ravel()
-                                            actual = my4dto2d(seq['y'][test_set])
+                                            fold_pred = flatten_sequence(seq['y'][test_set])
+                                            fold_pred = np.append(np.ones((len(fold_pred), 1)) * i, fold_pred, axis=1)
 
-                                            # print(du.ndims(actual))
-                                            # print(du.ndims(pred_flatten_sequence))
+                                            for p in pred:
+                                                fold_pred = np.append(fold_pred, flatten_sequence(p), axis=1)
 
-                                            model_pred[0].extend(np.ones((len(actual))) * i)
-                                            model_pred[1].extend(pred_flatten_sequence)
-                                            model_pred[2].extend(actual)
+                                            if overall_pred is None:
+                                                overall_pred = fold_pred
+                                            else:
+                                                overall_pred = np.append(overall_pred, fold_pred, axis=0)
 
-                                            du.write_csv(np.array(model_pred).T, 'model_predictions.csv', pred_label)
+                                            du.write_csv(overall_pred, 'predictions.csv')
 
-                                            fold_auc.append(
-                                                eu.auc(actual, pred_flatten_sequence, True)
-                                                # Aprime(actual=actual, predicted=pred_flatten_sequence)
-                                            )
-                                            fold_rmse.append(
-                                                eu.rmse(actual=actual, predicted=pred_flatten_sequence))
+                                            stride = np.sum(desc['n_labels'])
+                                            offset = 1
+                                            inc = 0
+                                            lb_inc = 0
 
                                             print("{:=<40}\n".format(''))
-                                            print("Fold AUC: {:<.3f}".format(fold_auc[-1]))
-                                            print("Fold RMSE: {:<.3f}".format(fold_rmse[-1]))
-                                            print("Fold Cost: {:<.3f}".format(net.get_cost(seq['x'][test_set],
-                                                                                           seq['y'][test_set],True)))
+                                            for lab_set in desc['n_labels']:
+                                                lab_col = list(range(offset,offset+lab_set))
+
+                                                ls_auc = eu.auc(fold_pred[:, lab_col],
+                                                             fold_pred[:, list(lab_col + stride)], True)
+                                                print("Fold AUC (Label Set {}): {:<.3f}".format(inc, ls_auc))
+
+                                                fold_auc[lb_inc].append(ls_auc)
+                                                lb_inc += 1
+
+                                                if lab_set > 1:
+                                                    ls_iauc = eu.auc(fold_pred[:, lab_col],
+                                                                    fold_pred[:, list(lab_col + stride)], False)
+                                                    for iauc in range(len(ls_iauc)):
+                                                        print("  - Fold AUC (Label Set {}, Class {}): {:<.3f}"
+                                                              .format(inc, iauc, ls_iauc[iauc]))
+                                                        fold_auc[lb_inc].append(ls_iauc[iauc])
+                                                        lb_inc += 1
+
+                                                offset += lab_set
+                                                inc += 1
+                                            print("{:=<40}\n".format(''))
+
+                                            offset = 1
+                                            inc = 0
+                                            lb_inc = 0
+                                            print("{:=<40}\n".format(''))
+                                            for lab_set in desc['n_labels']:
+                                                lab_col = list(range(offset, offset + lab_set))
+
+                                                ls_rmse = eu.rmse(fold_pred[:, lab_col],
+                                                                  fold_pred[:, list(lab_col + stride)], True)
+
+                                                print("Fold RMSE (Label Set {}): {:<.3f}".format(inc, ls_rmse))
+
+                                                fold_rmse[lb_inc].append(ls_rmse)
+                                                lb_inc += 1
+
+                                                if lab_set > 1:
+                                                    ls_irmse = eu.rmse(fold_pred[:, lab_col],
+                                                                      fold_pred[:, list(lab_col + stride)], False)
+                                                    for irmse in range(len(ls_irmse)):
+                                                        print("  - Fold RMSE (Label Set {}, Class {}): {:<.3f}"
+                                                              .format(inc, irmse, ls_irmse[irmse]))
+                                                        fold_rmse[lb_inc].append(ls_irmse[irmse])
+                                                        lb_inc += 1
+
+                                                offset += lab_set
+                                                inc += 1
                                             print("{:=<40}\n".format(''))
 
                                             net.session.close()
                                             if ae is not None:
                                                 ae.session.close()
 
-                                        auc = np.mean(fold_auc)
-                                        s_auc = np.std(fold_auc)
-                                        rmse = np.mean(fold_rmse)
-                                        s_rmse = np.std(fold_rmse)
 
+                                        # auc = np.mean(fold_auc)
+                                        # s_auc = np.std(fold_auc)
+                                        # rmse = np.mean(fold_rmse)
+                                        # s_rmse = np.std(fold_rmse)
+
+                                        inc = 0
                                         print("{:=<40}\n".format(''))
-                                        print("Average AUC: {:<.3f} ({:<.3f})".format(auc, s_auc))
-                                        print("Average RMSE: {:<.3f} ({:<.3f})".format(rmse, s_rmse))
+                                        for lab_set in desc['n_labels']:
+                                            print("Average AUC (Label Set {}): {:<.3f}".format(inc,
+                                                                                               np.nanmean(fold_auc[inc])))
+
+                                            inc += 1
+                                            if lab_set > 1:
+                                                linc = inc
+                                                for iauc in range(lab_set):
+                                                    print("  - Average AUC (Label Set {}, Class {}): {:<.3f}"
+                                                          .format(linc, iauc, np.mean(fold_auc[inc])))
+                                                    inc += 1
+                                        print("{:=<40}".format(''))
+                                        inc = 0
+                                        print("{:=<40}\n".format(''))
+                                        for lab_set in desc['n_labels']:
+                                            print("Average RMSE (Label Set {}): {:<.3f}".format(inc,
+                                                                                               np.nanmean(fold_rmse[inc])))
+
+                                            inc += 1
+                                            if lab_set > 1:
+                                                linc = inc
+                                                for irmse in range(lab_set):
+                                                    print("  - Average RMSE (Label Set {}, Class {}): {:<.3f}"
+                                                          .format(linc, irmse, np.mean(fold_rmse[inc])))
+                                                    inc += 1
+                                        print("{:=<40}".format(''))
+                                        print('Hidden Nodes = {}\n'
+                                              'Batch Size = {}\n'
+                                              'Recurrent Layers = {}\n'
+                                              'Keep Probability = {}\n'
+                                              'Step Size = {}\n'
+                                              'Threshold = {}\n'
+                                              'Optimizer = {}\n'
+                                              'Auto Encoder = {}\n'
+                                              'Fully Connected Layer = {}'.format(h,b,l,k,s,t,o,a,f))
                                         print("{:=<40}".format(''))
 
-                                        agg_perf = ((2.*(float(auc>.5)*auc))-1) + (1-rmse)
-                                        if best_perf is None or (best_perf is not None and agg_perf > best_perf):
-                                            best_perf = agg_perf
-                                            vu.plot_lines(training_series,save_file='best_last_fold.png',show=False)
-
-                                        output.append([h, b, l, k, s, t, o, a, f, auc, s_auc, rmse, s_rmse, time.time()-start])
-                                        du.write_csv(output,'model_performance.csv',headers)
+                                        #
+                                        # agg_perf = ((2.*(float(auc>.5)*auc))-1) + (1-rmse)
+                                        # if best_perf is None or (best_perf is not None and agg_perf > best_perf):
+                                        #     best_perf = agg_perf
+                                        #     vu.plot_lines(training_series, save_file='best_last_fold.png',show=False)
+                                        #
+                                        # output.append([h, b, l, k, s, t, o, a, f, auc, s_auc, rmse, s_rmse, time.time()-start])
+                                        # du.write_csv(output,'model_performance.csv',headers)
 
 
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
 
     starttime = time.time()
-    lb = 'npc'
+
+    lb = ['npc', 'fa', 'ws', 'rc', 'af']
     hiddenUnits = 200
     keepRate = 0.6
     print('Label:', lb, 'HiddenUnits:', hiddenUnits)

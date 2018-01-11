@@ -277,6 +277,9 @@ def cross_feature(class_array, feature_array, fill=0, distinct_classes=None, dis
     ca = np.array(class_array).reshape((-1))
     fa = np.array(feature_array).reshape((len(feature_array), -1))
 
+    if not hasattr(distinct_feature_values[0],'__iter__'):
+        distinct_feature_values = [distinct_feature_values]
+
     if distinct_feature_values is not None:
         assert len(distinct_feature_values) == fa.shape[1]
 
@@ -314,10 +317,11 @@ def cross_feature(class_array, feature_array, fill=0, distinct_classes=None, dis
             row[(n_cross * ind) + j] = 0
 
         for j in range(fa.shape[1]):
-            f_ind = np.argwhere(np.array(value_lookup[j]['values']) == fa[i,j]).ravel()
+            f_ind = np.argwhere(np.array(value_lookup[j]['values'], str) == str(fa[i,j])).ravel()
             if len(f_ind) == 0:
                 raise LookupError(
-                    'A value exists in the data that is not defined within the distinct feature values')
+                    'The value {} exists in the data but is not defined within the distinct feature values'
+                        .format(str(fa[i,j])))
             f_ind = f_ind[0]
 
             row[(n_cross * ind) + value_lookup[j]['offset'] + f_ind] = 1
@@ -782,3 +786,13 @@ class Transforms:
     def get_modified_columns(self):
         return self.__modified
 
+
+if __name__ == "__main__":
+
+    data, headers = read_csv('resources/DKT_test.csv')
+    print_descriptives(data,headers)
+
+    cf = cross_feature(data[:,1],data[:,3],np.nan, distinct_feature_values=[0,1])
+    for i in cf:
+        print(i)
+        print(cf[i])

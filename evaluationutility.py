@@ -11,6 +11,9 @@ def auc(actual, predicted, average_over_labels=True):
 
     na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
 
+    if len(na) == 0:
+        return np.nan
+
     ac = ac[na]
     pr = pr[na]
 
@@ -39,17 +42,28 @@ def f1(actual, predicted):
     return f1_score(np.array(actual), np.round(predicted))
 
 
-def rmse(actual, predicted):
+def rmse(actual, predicted, average_over_labels=True):
     assert len(actual) == len(predicted)
-    score = [[],[]]
-    for i in range(0,len(actual)):
-        # print(actual[i])
-        # print(predicted[i])
-        if not np.isnan(actual[i]):
-            score[1].append(predicted[i])
-            score[0].append(int(actual[i]))
 
-    return np.sqrt(mean_squared_error(np.array(score[0]), np.array(score[1])))
+    ac = np.array(actual).reshape((len(actual), -1))
+    pr = np.array(predicted).reshape((len(predicted), -1))
+
+    na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
+
+    if len(na) == 0:
+        return np.nan
+
+    ac = ac[na]
+    pr = pr[na]
+
+    label_rmse = []
+    for i in range(ac.shape[-1]):
+        label_rmse.append(np.sqrt(mean_squared_error(np.array(ac[:, i]), np.array(pr[:, i]))))
+
+    if average_over_labels:
+        return np.mean(label_rmse)
+    else:
+        return label_rmse
 
 
 if __name__ == "__main__":
