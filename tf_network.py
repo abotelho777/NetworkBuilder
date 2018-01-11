@@ -1987,7 +1987,7 @@ def run_experiments(lb):
                                                 linc = inc
                                                 for iauc in range(lab_set):
                                                     print("  - Average AUC (Label Set {}, Class {}): {:<.3f}"
-                                                          .format(linc, iauc, np.mean(fold_auc[inc])))
+                                                          .format(linc, iauc, np.nanmean(fold_auc[inc])))
                                                     inc += 1
                                         print("{:=<40}".format(''))
                                         inc = 0
@@ -2001,7 +2001,7 @@ def run_experiments(lb):
                                                 linc = inc
                                                 for irmse in range(lab_set):
                                                     print("  - Average RMSE (Label Set {}, Class {}): {:<.3f}"
-                                                          .format(linc, irmse, np.mean(fold_rmse[inc])))
+                                                          .format(linc, irmse, np.nanmean(fold_rmse[inc])))
                                                     inc += 1
                                         print("{:=<40}".format(''))
                                         print('Hidden Nodes = {}\n'
