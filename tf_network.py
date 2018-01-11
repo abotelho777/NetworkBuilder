@@ -1591,7 +1591,7 @@ def describe_multi_label(sequence_y, print_description=False):
     return desc
 
 
-def myOffset(y,label=0):
+def offset_label_timestep(y, label=0):
     result = np.array(y)
 
     for s in range(len(result)):
@@ -1752,7 +1752,7 @@ def run_experiments(lb):
     layers = [1]
     keep = [.5]
     step = [1e-4]
-    threshold = [-0.001]
+    threshold = [0.001]
     optimizer = [Optimizer.ADAM]
     AE = [True]
     FC = [False]
@@ -1788,10 +1788,10 @@ def run_experiments(lb):
 
     desc = describe_multi_label(seq['y'], True)
 
-    # exit(1)
-
-    if outputlabel == 'npc' or outputlabel == 'fa':
-        seq['y'] = myOffset(seq['y'])
+    out_lb = outputlabel.split('_')
+    for i in range(len(out_lb)):
+        if out_lb[i] == 'npc' or out_lb[i] == 'fa':
+            seq['y'] = offset_label_timestep(seq['y'], i)
 
     output = []
     best_perf = None
