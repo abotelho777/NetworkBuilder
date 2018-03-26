@@ -95,9 +95,15 @@ def __load_csv__(filename, max_rows=None):
         old_str = output_str
         i = 0
         for line in f_lines:
+            line = np.array(line)
             na = np.argwhere(np.array(line[:]) == '#N/A').ravel()
             if len(na) > 0:
-                line[line.index('#N/A')] = 'nan'
+                line[na] = ''
+
+            na = np.argwhere(np.array(line[:]) == 'NA').ravel()
+
+            if len(na) > 0:
+                line[na] = ''
 
             csvarr.append(line)
             if max_rows is not None:
@@ -137,13 +143,12 @@ def write_csv(data, filename, headers=None):
         # for i in range(0,len(data)):
         ar = np.array(data, dtype=str)
         ar = ar.reshape((ar.shape[0],-1))
-        [writer.writerow(j) for j in ar]
-        # if len(ar.shape) == 2:
-        #     for j in range(0,len(ar[i])-1):
-        #         f.write(str(ar[i][j]) + ',')
-        #     f.write(str(ar[i][len(ar[i])-1]) + '\n')
-        # else:
-        #     f.write(str(ar[i]) + '\n')
+
+        for j in ar:
+            j[np.argwhere([k == 'None' for k in j]).ravel()] = ''
+            j[np.argwhere([k is None for k in j]).ravel()] = ''
+            writer.writerow(j)
+
     f.close()
 
 
@@ -390,13 +395,13 @@ def ndims(ar):
 
 
 def db_connect(db_name, user, password='', host='127.0.0.1', port='5432'):
-    try:
-        return pg.connect(dbname=db_name, user=user, password=password, host=host, port=port)
-    except Exception:
-        return None
+    # try:
+    return pg.connect(dbname=db_name, user=user, password=password, host=host, port=port)
+    # except Exception:
+    #     return None
 
 
-def db_query(db_object, query, arguments=None):
+def db_query(db_object, query, arguments=None, return_column_names=False):
     assert type(arguments) is dict or arguments is None
 
     if arguments is not None:
@@ -413,7 +418,10 @@ def db_query(db_object, query, arguments=None):
         print(query + '\033[0m')
 
     try:
-        return cur.fetchall()
+        if return_column_names:
+            return cur.fetchall(), [desc[0] for desc in cur.description]
+        else:
+            return cur.fetchall()
     except Exception:
         try:
             db_object.commit()
