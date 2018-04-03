@@ -3,8 +3,7 @@ from sklearn.metrics import f1_score
 from sklearn.metrics import mean_squared_error
 from skll.metrics import kappa as kpa
 
-
-def auc(actual, predicted, average_over_labels=True):
+def auc(actual, predicted, average_over_labels=True, partition=1024.):
     assert len(actual) == len(predicted)
 
     ac = np.array(actual).reshape((len(actual),-1))
@@ -18,10 +17,6 @@ def auc(actual, predicted, average_over_labels=True):
     ac = ac[na]
     pr = pr[na]
 
-    # for i in range(len(ac)):
-    #     print(ac[i],'-',pr[i])
-
-
     label_auc = []
     for i in range(ac.shape[-1]):
         a = np.array(ac[:,i])
@@ -33,12 +28,27 @@ def auc(actual, predicted, average_over_labels=True):
         # print(pos)
         # print(neg)
 
-        eq = np.ones((np.alen(neg), np.alen(pos))) * p[pos].T == np.ones((np.alen(neg), np.alen(pos))) * p[neg]
-        geq = np.array(np.ones((np.alen(neg), np.alen(pos))) *
-                       p[pos].T >= np.ones((np.alen(neg), np.alen(pos))) * p[neg],
-                       dtype=np.float32)
-        geq[eq[:, :] == True] = 0.5
-        label_auc.append(np.mean(geq))
+        p_div = int(np.ceil(len(pos)/partition))
+        n_div = int(np.ceil(len(neg)/partition))
+
+        div = 0
+        for j in range(int(p_div)):
+            p_range = list(range(int(j * p_div), int(np.minimum(int((j + 1) * p_div), len(pos)))))
+            for k in range(n_div):
+                n_range = list(range(int(k * n_div), int(np.minimum(int((k + 1) * n_div), len(neg)))))
+
+
+                eq = np.ones((np.alen(neg[n_range]), np.alen(pos[p_range]))) * p[pos[p_range]].T == np.ones(
+                    (np.alen(neg[n_range]), np.alen(pos[p_range]))) * p[neg[n_range]]
+
+                geq = np.array(np.ones((np.alen(neg[n_range]), np.alen(pos[p_range]))) *
+                               p[pos[p_range]].T >= np.ones((np.alen(neg[n_range]),
+                                                             np.alen(pos[p_range]))) * p[neg[n_range]],
+                               dtype=np.float32)
+                geq[eq[:, :] == True] = 0.5
+                div += np.sum(geq)
+
+        label_auc.append(div / (np.alen(pos)*np.alen(neg)))
 
     if average_over_labels:
         return np.nanmean(label_auc)
@@ -134,7 +144,33 @@ def cohen_kappa_multiclass(actual, predicted):
 
 if __name__ == "__main__":
 
-    x = np.array([.2, .3, .5, .3, .6])
-    y = np.array([0, 1, 0, 0, 1])
+    import time
 
-    print(auc(y,x))
+    n = 100
+
+    partition = [64., 128., 256., 512., 1024., 2048., 4096.]
+    h = '{:^20}'.format('Samples')
+    for p in partition:
+        h += '{:^15}'.format('AUC ({})'.format(int(p)))
+    print(h)
+    print(('{:=<' + '{}'.format(len(h)) + '}').format(''))
+    for i in range(13):
+        print('{:<20}'.format(n), end='')
+
+        y = np.random.randint(0,2,n)
+
+        y_hat = np.random.rand(n)
+        y_hat[np.argwhere(y == 1).ravel()] += 0.2
+
+        for p in partition:
+            start = time.time()
+            try:
+                a = auc(y,y_hat, p)
+                t = time.time()-start
+                print('{:^15}'.format('{:<.3f}s'.format(t)), end='')
+            except:
+                print('{:^15}'.format('Failed'), end='')
+        print('')
+
+        n *= 2
+

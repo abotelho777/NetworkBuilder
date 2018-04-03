@@ -8,6 +8,7 @@ import time
 import pickle
 import csv
 import sys
+import os
 
 
 class Normalization:
@@ -77,6 +78,7 @@ class Network:
         self.deepest_recurrent_layer = None
 
         self.__deepest_hidden_layer_ind = None
+        self.__deepest_non_output_layer_ind = None
 
         self.graph = tf.get_default_graph()
 
@@ -113,7 +115,7 @@ class Network:
 
         self.__tmp_multi_out['methods'] = cost_methods
         self.__tmp_multi_out['weights'] = weights
-        self.__tmp_multi_out['deepest_hidden'] = self.__deepest_hidden_layer_ind
+        self.__tmp_multi_out['deepest_hidden'] = len(self.layers)-1
 
         return self
 
@@ -259,7 +261,7 @@ class Network:
         gate['a'] = activation
         return gate
 
-    def add_trunc_lstm_layer(self, n, use_last=False, peepholes=False, activation=tf.identity):
+    def add_lstm_layer(self, n, use_last=False, peepholes=False, as_decoder=False, activation=tf.identity):
         self.recurrent = True
         self.use_last = use_last
 
@@ -269,19 +271,28 @@ class Network:
             layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
                               'arg': {'timesteps': None, 'hsubt': None, 'cell': None}}
 
-            layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
-                                                  initializer=tf.truncated_normal(
-                                                      (self.layers[-1]['n'] + layer['n'], layer['n']),
-                                                      stddev=1. / np.sqrt(self.layers[-1]['n'])),
-                                                  dtype=tf.float32)
+            if as_decoder:
+                layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
+                                                      initializer=tf.truncated_normal(
+                                                          (self.layers[-2]['n'] + layer['n'], layer['n']),
+                                                          stddev=1. / np.sqrt(self.layers[-2]['n'])),
+                                                      dtype=tf.float32)
+            else:
+
+                layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
+                                                      initializer=tf.truncated_normal(
+                                                          (self.layers[-1]['n'] + layer['n'], layer['n']),
+                                                          stddev=1. / np.sqrt(self.layers[-1]['n'])),
+                                                      dtype=tf.float32)
             layer['param']['b'] = tf.get_variable('Layer' + str(len(self.layers)) + '_B',
                                                   (layer['n']), dtype=tf.float32,
                                                   initializer=tf.constant_initializer(0.0))
+
             layer['param']['arg']['cell'] = tf.get_variable('Layer' + str(len(self.layers)) + '_C',
                                                             (layer['n']), dtype=tf.float32,
                                                             initializer=tf.constant_initializer(0.0))
 
-        feeding_n = self.layers[-1]['n'] + n
+        feeding_n = self.layers[-1]['n'] + n if not as_decoder else self.layers[-2]['n'] + n
 
         if peepholes:
             feeding_n += n
@@ -335,13 +346,13 @@ class Network:
                 outputb = tf.identity(outputb)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', outputb)
 
-                concat = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n']]), tf.float32), state], 1)
+                concat = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), state], 1)
                 cell_prime = tf.tanh(tf.matmul(concat, W) + b)
 
                 p_concat = state if not peepholes else tf.concat([state, tf.cast(tf.reshape(
                     tf.tile(C, [tf.shape(state)[0]]), [-1, layer['n']]), tf.float32)], 1)
 
-                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n']]), tf.float32), p_concat], 1)
+                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), p_concat], 1)
 
                 forget_h = forget_g['a'](tf.matmul(concat_g, forgetW) + forgetb)
                 input_h = input_g['a'](tf.matmul(concat_g, inputW) + inputb)
@@ -349,132 +360,30 @@ class Network:
                 C = (C * forget_h) + (cell_prime * input_h)
 
                 pr_concat = state if not peepholes else tf.concat([state, C], 1)
-                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n']]), tf.float32), pr_concat], 1)
+                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), pr_concat], 1)
                 output_h = output_g['a'](tf.matmul(concat_g, outputW) + outputb)
 
                 layer['z'] = (output_h * tf.tanh(C))
                 return layer['z']
 
         shape = tf.shape(self.layers[-1]['h'])
-        init = tf.Variable(tf.ones((1, layer['n'])) * 0.0)
-        lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
-                          initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
+
+        if not as_decoder:
+            init = tf.Variable(tf.ones((1, layer['n'])) * 0.0)
+            lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
+                              initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
+        else:
+            init = tf.transpose(self.layers[-1]['h'], [1, 0, 2])[-1]
+
+            lstm_zs = tf.scan(__lstm_step, tf.transpose(tf.zeros_like(self.layers[-2]['h']), [1, 0, 2]),
+                              initializer=tf.reshape(init, [-1, layer['n']]))
 
         layer['h'] = layer['a'](tf.transpose(lstm_zs, [1, 0, 2]))
         self.layers.insert(max(0, len(self.layers)), layer)
+
         self.deepest_recurrent_layer = len(self.layers) - 1
 
-        if self.__tmp_multi_out is None:
-            self.deepest_hidden_layer = self.layers[-1]
-            self.__deepest_hidden_layer_ind = len(self.layers) - 1
-        return self
-
-    def add_lstm_layer(self, n, use_last=False, peepholes=False, activation=tf.identity):
-        self.recurrent = True
-        self.use_last = use_last
-
-        with tf.variable_scope('rnn_cell'):
-            layer = dict()
-            layer['n'] = n
-            layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
-                              'arg': {'timesteps': None, 'hsubt': None, 'cell': None}}
-
-            layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
-                                                  initializer=tf.truncated_normal(
-                                                      (self.layers[-1]['n'] + layer['n'], layer['n']),
-                                                      stddev=1. / np.sqrt(self.layers[-1]['n'])),
-                                                  dtype=tf.float32)
-            layer['param']['b'] = tf.get_variable('Layer' + str(len(self.layers)) + '_B',
-                                                  (layer['n']), dtype=tf.float32,
-                                                  initializer=tf.constant_initializer(0.0))
-            layer['param']['arg']['cell'] = tf.get_variable('Layer' + str(len(self.layers)) + '_C',
-                                                            (layer['n']), dtype=tf.float32,
-                                                            initializer=tf.constant_initializer(0.0))
-
-        feeding_n = self.layers[-1]['n'] + n
-
-        if peepholes:
-            feeding_n += n
-
-        forget_g = self.__init_gate(n, feeding_n, tf.sigmoid, name='Layer' + str(len(self.layers)) + '_forget')
-        input_g = self.__init_gate(n, feeding_n, tf.sigmoid, name='Layer' + str(len(self.layers)) + '_input')
-        output_g = self.__init_gate(n, feeding_n, tf.sigmoid, name='Layer' + str(len(self.layers)) + '_output')
-
-        layer['a'] = activation
-        L = self.layers
-
-        def __lstm_step(state, input):
-            with tf.variable_scope('rnn_cell', reuse=True):
-                state = layer['a'](state)
-                W = tf.get_variable('Layer' + str(len(L)) + '_W')
-                W = tf.identity(W)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', W)
-
-                b = tf.get_variable('Layer' + str(len(L)) + '_B')
-                b = tf.identity(b)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', b)
-
-                C = tf.get_variable('Layer' + str(len(L)) + '_C')
-                C = tf.identity(C)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', C)
-
-                # forget gate
-                forgetW = tf.get_variable('Layer' + str(len(L)) + '_forget_W')
-                forgetW = tf.identity(forgetW)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', forgetW)
-
-                forgetb = tf.get_variable('Layer' + str(len(L)) + '_forget_B')
-                forgetb = tf.identity(forgetb)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', forgetb)
-
-                # input gate
-                inputW = tf.get_variable('Layer' + str(len(L)) + '_input_W')
-                inputW = tf.identity(inputW)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', inputW)
-
-                inputb = tf.get_variable('Layer' + str(len(L)) + '_input_B')
-                inputb = tf.identity(inputb)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', inputb)
-
-                # output gate
-                outputW = tf.get_variable('Layer' + str(len(L)) + '_output_W')
-                outputW = tf.identity(outputW)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', outputW)
-
-                outputb = tf.get_variable('Layer' + str(len(L)) + '_output_B')
-                outputb = tf.identity(outputb)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', outputb)
-
-                concat = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n']]), tf.float32), state], 1)
-                cell_prime = tf.tanh(tf.matmul(concat, W) + b)
-
-                p_concat = state if not peepholes else tf.concat([state, tf.cast(tf.reshape(
-                    tf.tile(C, [tf.shape(state)[0]]), [-1, layer['n']]), tf.float32)], 1)
-
-                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n']]), tf.float32), p_concat], 1)
-
-                forget_h = forget_g['a'](tf.matmul(concat_g, forgetW) + forgetb)
-                input_h = input_g['a'](tf.matmul(concat_g, inputW) + inputb)
-
-                C = (C * forget_h) + (cell_prime * input_h)
-
-                pr_concat = state if not peepholes else tf.concat([state, C], 1)
-                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n']]), tf.float32), pr_concat], 1)
-                output_h = output_g['a'](tf.matmul(concat_g, outputW) + outputb)
-
-                layer['z'] = (output_h * tf.tanh(C))
-                return layer['z']
-
-        shape = tf.shape(self.layers[-1]['h'])
-        init = tf.Variable(tf.ones((1, layer['n'])) * 0.0)
-        lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
-                          initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
-
-        layer['h'] = layer['a'](tf.transpose(lstm_zs, [1, 0, 2]))
-        self.layers.insert(max(0, len(self.layers)), layer)
-        self.deepest_recurrent_layer = len(self.layers) - 1
-
-        if self.__tmp_multi_out is None:
+        if self.__tmp_multi_out is None and not as_decoder:
             self.deepest_hidden_layer = self.layers[-1]
             self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
@@ -824,13 +733,12 @@ class Network:
                                              tf.float32) + tf.constant(1e-8, dtype=tf.float32))
 
                 w = self.__output_weights[i]
-                # w = tf.gather(self.__output_tf_wts, tf.constant(i))
+                # # w = tf.gather(self.__output_tf_wts, tf.constant(i))
                 # min_w = tf.gather(self.__output_tf_wts, tf.argmin(self.__output_tf_wts))
                 if self.cost_function is None:
                     self.cost_function = w * cost_fn
                 else:
                     self.cost_function += w * cost_fn
-
                 self.y.append(out_y)
 
             # self.cost_function += tf.reduce_mean(1.-self.__output_tf_wts)
@@ -847,7 +755,7 @@ class Network:
             self.var_grads = self.update.compute_gradients(self.cost_function, tf.trainable_variables())
             self.clipped_var_grads = [(tf.clip_by_norm(
                 tf.where(tf.is_nan(grad if grad is not None else tf.zeros_like(var)), tf.zeros_like(var),
-                         grad if grad is not None else tf.zeros_like(var)), 100.), var) for grad, var in self.var_grads]
+                         grad if grad is not None else tf.zeros_like(var)), 1.), var) for grad, var in self.var_grads]
             self.update_weights = self.update.apply_gradients(self.clipped_var_grads)
 
             tf.global_variables_initializer().run()
@@ -1266,7 +1174,8 @@ class Network:
             arg[self.layers[0]['z']] = series_batch_padded.reshape((len(series_batch), n_timestep, -1))
 
             if not len(self.y) == len(series_label_padded):
-                raise IndexError('The number of output layers does not match the labels supplied')
+                raise IndexError('The number of output layers does not match the labels supplied ({} vs {})'.format(
+                    len(self.y), len(series_label_padded)))
 
             for i in range(len(self.y)):
                 arg[self.y[i]] = series_label_padded[i]
@@ -1643,6 +1552,8 @@ def load_csv_to_sequence(filename, pivot, labels, columns, tag):
 
     print('cleaning temp folder...')
     shutil.rmtree('temp/')
+    if not os.path.exists('temp/'):
+        os.makedirs('temp/')
 
     csvarr = []
     n_lines = len(open(filename).readlines())
@@ -1676,7 +1587,7 @@ def load_csv_to_sequence(filename, pivot, labels, columns, tag):
             if not hasattr(pivot, '__iter__'):
                 pivot = [pivot]
 
-            if len(csvarr) > 1000 and '_'.join([str(line[piv]) for piv in pivot]) != id:
+            if len(csvarr) > 10000 and '_'.join([str(line[piv]) for piv in pivot]) != id:
                 if id is not None:
                     ar = np.array(csvarr)
 
@@ -1833,6 +1744,25 @@ def extract_from_multi_label(sequence_y, labels):
     return np.array(seq_y)
 
 
+def reverse_multi_label(sequence_y, labels):
+    desc = describe_multi_label(sequence_y)
+
+    labels = np.array([labels]).ravel()
+
+    if max(labels) >= desc['n_label_sets']:
+        raise ValueError('The label index is larger than the number of label sets.')
+
+    seq_y = []
+
+    for i in range(desc['n_samples']):
+        set = dict()
+        for j in range(len(labels)):
+            set[j] = np.flip(sequence_y[i][labels[j]], axis=0)
+        seq_y.append(set)
+
+    return np.array(seq_y)
+
+
 def merge_multi_label(sequence_y1, sequence_y2=None):
     desc1 = describe_multi_label(sequence_y1)
 
@@ -1958,7 +1888,7 @@ def use_last_multi_label(sequence_y, labels):
     return np.array(seq_y)
 
 
-def describe_multi_label(sequence_y, print_description=False):
+def describe_multi_label(sequence_y, print_description=False, print_descriptives=False):
     desc = dict()
 
     desc['n_samples'] = len(sequence_y)
@@ -1968,7 +1898,8 @@ def describe_multi_label(sequence_y, print_description=False):
     for i in range(desc['n_label_sets']):
         desc['n_labels'].append(len(sequence_y[0][i][0]))
 
-    fl_y = flatten_sequence(sequence_y)
+    if print_descriptives:
+        fl_y = flatten_sequence(sequence_y)
     inc = 0
     if print_description:
         print("{:=<40}".format(''))
@@ -1977,7 +1908,7 @@ def describe_multi_label(sequence_y, print_description=False):
         print("-- Number of Samples: {}".format(desc['n_samples']))
         print("-- Number of Label Sets: {}".format(desc['n_label_sets']))
         for i in range(desc['n_label_sets']):
-            if desc['n_labels'][i] < 6:
+            if print_descriptives and desc['n_labels'][i] < 6:
                 m = np.nanmean(fl_y[:, inc:inc + desc['n_labels'][i]], axis=0)
                 mstr = '[{:<.3f}'.format(m[0])
                 for mi in range(1, len(m)):
@@ -1985,8 +1916,13 @@ def describe_multi_label(sequence_y, print_description=False):
                 mstr += ']'
             else:
                 mstr = '[ ... ]'
-            print("---- {}: {} Label{} :: {}".format(str(i + 1), desc['n_labels'][i],
-                                                     '' if desc['n_labels'][i] == 1 else 's', mstr))
+
+            if print_descriptives:
+                print("---- {}: {} Label{} :: {}".format(str(i + 1), desc['n_labels'][i],
+                                                         '' if desc['n_labels'][i] == 1 else 's', mstr))
+            else:
+                print("---- {}: {} Label{}".format(str(i + 1), desc['n_labels'][i],
+                                                   '' if desc['n_labels'][i] == 1 else 's'))
             inc += desc['n_labels'][i]
 
         print("{:=<40}\n".format(''))
@@ -2041,7 +1977,7 @@ def loadAndReshape(lb):
 
     cov = list(range(3, 95))
 
-    load_csv_to_sequence('resources/mergedData_labeled.csv', [2, 96], label, cov, lb_name)
+    load_csv_to_sequence('resources/mergedData_labeled.csv', [2], label, cov, lb_name)
 
     # seq = format_data(data, [2, 96], label, cov, 1, True)
     # seq = format_data(data, 1, [101, 102, 103, 104], list(range(4, 96)), 3, True) # affect (check columns)
@@ -2120,26 +2056,26 @@ def run_experiments(lb):
     non_af_labels = extract_from_multi_label(np.array(y), [0,1,2,3])
     """
 
-    subset = [0, 1, 2, 3, 4]
-    out_lb = np.array(outputlabel.split('_'))[subset]
-    seq['y'] = extract_from_multi_label(np.array(y), subset)
+    # subset = [0, 1, 2, 3, 4]
+    # out_lb = np.array(outputlabel.split('_'))[subset]
+    # seq['y'] = extract_from_multi_label(np.array(y), subset)
 
-    flatk = np.load('flat_k_' + outputlabel + '.npy')
-    flatx = np.load('flat_x_' + outputlabel + '.npy')
-    flaty = np.load('flat_y_' + outputlabel + '.npy')
+    # flatk = np.load('flat_k_' + outputlabel + '.npy')
+    # flatx = np.load('flat_x_' + outputlabel + '.npy')
+    # flaty = np.load('flat_y_' + outputlabel + '.npy')
 
     flat = dict()
-    flat['key'] = np.array(flatk)
-    flat['x'] = np.array(flatx)
-    flat['y'] = np.array(flaty)
+    flat['key'] = None # np.array(flatk)
+    flat['x'] = None # np.array(flatx)
+    flat['y'] = None # np.array(flaty)
 
     desc = describe_multi_label(seq['y'], True)
 
-    for i in range(len(out_lb)):
-        if out_lb[i] == 'npc' or out_lb[i] == 'fa':
-            seq['y'] = offset_label_timestep(seq['y'], i)
-        elif out_lb[i] == 'ws':
-            seq['y'] = keep_only_last_label(seq['y'], i)
+    # for i in range(len(out_lb)):
+    #     if out_lb[i] == 'npc' or out_lb[i] == 'fa':
+    #         seq['y'] = offset_label_timestep(seq['y'], i)
+    #     elif out_lb[i] == 'ws':
+    #         seq['y'] = keep_only_last_label(seq['y'], i)
 
     output = []
     best_perf = None
