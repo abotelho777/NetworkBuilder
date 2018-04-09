@@ -31,11 +31,14 @@ def auc(actual, predicted, average_over_labels=True, partition=1024.):
         p_div = int(np.ceil(len(pos)/partition))
         n_div = int(np.ceil(len(neg)/partition))
 
+        # print(len(pos), p_div)
+        # print(len(neg), n_div)
+
         div = 0
         for j in range(int(p_div)):
-            p_range = list(range(int(j * p_div), int(np.minimum(int((j + 1) * p_div), len(pos)))))
+            p_range = list(range(int(j * partition), int(np.minimum(int((j + 1) * partition), len(pos)))))
             for k in range(n_div):
-                n_range = list(range(int(k * n_div), int(np.minimum(int((k + 1) * n_div), len(neg)))))
+                n_range = list(range(int(k * partition), int(np.minimum(int((k + 1) * partition), len(neg)))))
 
 
                 eq = np.ones((np.alen(neg[n_range]), np.alen(pos[p_range]))) * p[pos[p_range]].T == np.ones(
@@ -46,9 +49,14 @@ def auc(actual, predicted, average_over_labels=True, partition=1024.):
                                                              np.alen(pos[p_range]))) * p[neg[n_range]],
                                dtype=np.float32)
                 geq[eq[:, :] == True] = 0.5
+
+                # print(geq)
                 div += np.sum(geq)
+                # print(np.sum(geq))
+                # exit(1)
 
         label_auc.append(div / (np.alen(pos)*np.alen(neg)))
+        # print(label_auc)
 
     if average_over_labels:
         return np.nanmean(label_auc)
