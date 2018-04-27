@@ -124,7 +124,7 @@ def __load_csv__(filename, max_rows=None):
     return csvarr
 
 
-def write_csv(data, filename, headers=None):
+def write_csv(data, filename, headers=None, append=False):
 
     if headers is None:
         headers = []
@@ -132,8 +132,8 @@ def write_csv(data, filename, headers=None):
     if not filename.endswith('.csv'):
         filename += '.csv'
 
-    with open(filename, 'w') as f:
-        writer = csv.writer(f, delimiter=',', lineterminator = '\n')
+    with open(filename, 'w' if not append else 'a') as f:
+        writer = csv.writer(f, delimiter=',', lineterminator='\n')
 
         if len(headers)!=0:
             writer.writerow(np.array(headers, dtype=str))
@@ -141,13 +141,14 @@ def write_csv(data, filename, headers=None):
             #     f.write(str(headers[i]) + ',')
             # f.write(str(headers[len(headers)-1])+'\n')
         # for i in range(0,len(data)):
-        ar = np.array(data, dtype=str)
-        ar = ar.reshape((ar.shape[0],-1))
+        # ar = np.array(data, dtype=str)
+        # ar = ar.reshape((ar.shape[0],-1))
 
-        for j in ar:
-            j[np.argwhere([k == 'None' for k in j]).ravel()] = ''
-            j[np.argwhere([k is None for k in j]).ravel()] = ''
-            writer.writerow(j)
+        for j in data:
+            row = np.array(j, dtype=str)
+            row[np.argwhere([k == 'None' for k in row]).ravel()] = ''
+            row[np.argwhere([k is None for k in row]).ravel()] = ''
+            writer.writerow(row)
 
     f.close()
 
@@ -391,6 +392,9 @@ def ndims(ar):
         d += 1
         a = a[0]
 
+        if type(a) is np.string_ or type(a) is str:
+            break
+
     return d
 
 
@@ -406,7 +410,8 @@ def db_query(db_object, query, arguments=None, return_column_names=False):
 
     if arguments is not None:
         for k in arguments:
-            query = query.replace(str(k),arguments[k])
+            query = query.replace(str(k), '\'' + str(arguments[k]) + '\'' if isinstance(arguments[k], str) else str(
+                arguments[k]))
 
     cur = db_object.cursor()
     try:
@@ -428,6 +433,90 @@ def db_query(db_object, query, arguments=None, return_column_names=False):
             return []
         except Exception:
             return None
+
+
+def db_query_fetch(db_object, query, arguments=None, return_column_names=False):
+    assert type(arguments) is dict or arguments is None
+
+    if arguments is not None:
+        for k in arguments:
+            query = query.replace(str(k), '\'' + str(arguments[k]) + '\'' if isinstance(arguments[k], str) else str(
+                arguments[k]))
+
+    cur = db_object.cursor()
+    try:
+        cur.execute(query)
+    except Exception:
+        import traceback
+        print('\033[91m')
+        traceback.print_exc(file=sys.stdout)
+        print(query + '\033[0m')
+
+    if return_column_names:
+        return cur.fetchall(), [desc[0] for desc in cur.description]
+    else:
+        return cur.fetchall()
+
+
+def db_pull_data(csv_out_filename, db_object, query, arguments=None, partition=10000):
+    # s_query = 'SELECT COUNT(*) FROM ( ' + query + ') AS query;'
+    # print('querying size...')
+    # size = np.array(db_query(db_object, s_query, None, False)).ravel()[0]
+
+    # return size
+    lim_arg = ':limit'
+    off_arg = ':offset'
+
+    if query.find(':limit') < 0 and query.find(':offset') < 0:
+        lim_arg = ':_limit'
+        off_arg = ':_offset'
+        query = 'SELECT * FROM ( ' + query + ') AS query LIMIT :_limit OFFSET :_offset;'
+
+    if arguments is None:
+        arguments = dict()
+    arguments[lim_arg] = partition
+
+    offset = 0
+    total_rows = 0
+    inc = 1
+
+    output_str = '-- Part {} Retrieved ({} Total Rows)'.format(0, 0)
+    sys.stdout.write(output_str)
+    sys.stdout.flush()
+    old_str = output_str
+
+    while True:
+        arguments[off_arg] = offset
+        res, hdr = db_query_fetch(db_object, query, arguments, True)
+
+        total_rows += len(res)
+
+        if len(res) == 0:
+            break
+
+        if len(res) > 0:
+            write_csv(res,csv_out_filename,hdr if offset == 0 else None, offset != 0)
+
+        sys.stdout.write('\r' + (' ' * len(old_str)))
+        output_str = '\r-- Part {} Retrieved ({} Total Rows)'.format(inc, total_rows)
+        sys.stdout.write(output_str)
+        sys.stdout.flush()
+        old_str = output_str
+
+        del res
+
+        offset += partition
+        inc += 1
+
+    sys.stdout.write('\r' + (' ' * len(old_str)))
+    output_str = '\r-- {} Total Rows Retrieved ({} Parts)'.format(total_rows, inc)
+    sys.stdout.write(output_str)
+    sys.stdout.flush()
+
+    return total_rows
+
+
+
 
 
 class TableBuilder:
@@ -648,6 +737,7 @@ class Transforms:
     NONE = 'identity'
     COPY = 'copy'
     LOG = 'log'
+    CORRECTED_LOG = 'corrected_log'
     ROOT = 'root'
     ZSCORE = 'zscore'
     MZSCORE = 'mod_zscore'
@@ -663,6 +753,14 @@ class Transforms:
     @staticmethod
     def log(df, column):
         cov = as_float(df[:, column])
+        return np.log(cov)
+
+    @staticmethod
+    def corrected_log(df, column):
+        cov = as_float(df[:, column])
+        m = np.nanmin(cov)
+        if m < 1:
+            cov = (cov - m) + 1
         return np.log(cov)
 
     @staticmethod
@@ -754,6 +852,7 @@ class Transforms:
         self.__transforms = {
             'copy': Transforms.copy,
             'log': Transforms.log,
+            'corrected_log': Transforms.corrected_log,
             'root': Transforms.root,
             'zscore': Transforms.zscore,
             'mod_zscore': Transforms.modified_zscore,

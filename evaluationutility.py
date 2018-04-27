@@ -22,8 +22,18 @@ def auc(actual, predicted, average_over_labels=True, partition=1024.):
         a = np.array(ac[:,i])
         p = np.array(pr[:,i])
 
-        pos = np.argwhere(a[:] == np.max(a))
-        neg = np.argwhere(a[:] != np.max(a))
+        val = np.unique(a)
+
+        # if len(val) > 2:
+        #     print('AUC Warning - Number of distinct values in label set {} is greater than 2, '
+        #           'using median split of distinct values...'.format(i))
+        if len(val) == 1:
+            # print('AUC Warning - There is only 1 distinct value in label set {}, unable to calculate AUC'.format(i))
+            label_auc.append(np.nan)
+            continue
+
+        pos = np.argwhere(a[:] >= np.median(val))
+        neg = np.argwhere(a[:] < np.median(val))
 
         # print(pos)
         # print(neg)

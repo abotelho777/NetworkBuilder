@@ -36,11 +36,23 @@ class Optimizer:
     ADAGRAD = 'adagrad'
 
 
+NETWORK_ID = 0
+
+
 class Network:
     RAW_INPUT = 'raw_input'
     NORMALIZED_INPUT = 'normalized_input'
 
+    @staticmethod
+    def __get_next_id__(increment=True):
+        global NETWORK_ID
+        nid = NETWORK_ID
+        if increment:
+            NETWORK_ID += 1
+        return nid
+
     def __init__(self):
+        self.__id = Network.__get_next_id__()
         self.layers = []
         self.__is_init = False
         self.step_size = None
@@ -74,7 +86,7 @@ class Network:
         self.deepest_hidden_layer = None
 
         self.recurrent = False
-        self.use_last = False
+        # self.use_last = False
         self.deepest_recurrent_layer = None
 
         self.__deepest_hidden_layer_ind = None
@@ -184,23 +196,26 @@ class Network:
         return self
 
     def add_input_layer_from_network(self, network, layer_index):
-        network_layer = network.get_layer(layer_index)
+        # network_layer = network.get_layer(layer_index)
 
-        layer = dict()
-        layer['n'] = network_layer['n']
-        layer['z'] = network.layers[0]['z']
-        layer['param'] = network_layer['param']
-        layer['a'] = network_layer['a']
-        layer['h'] = network_layer['h']
+        for i in range(layer_index+1):
+            self.layers.insert(max(0, len(self.layers)), network.layers[i])
 
-        self.normalization = Normalization.NONE
+        # layer = dict()
+        # layer['n'] = network_layer['n']
+        # layer['z'] = network.layers[0]['z']
+        # layer['param'] = network_layer['param']
+        # layer['a'] = network_layer['a']
+        # layer['h'] = network_layer['h']
+
+        self.normalization = network.normalization
         self.args = network.args
         self.recurrent = network.recurrent
 
         self.raw_input = network.raw_input
         self.norm_input = network.norm_input
 
-        self.layers.insert(max(0, len(self.layers)), layer)
+        # self.layers.insert(max(0, len(self.layers)), layer)
         self.deepest_hidden_layer = self.layers[-1]
         self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
@@ -246,7 +261,7 @@ class Network:
         return self
 
     def __init_gate(self, n, feeding_n, activation=tf.identity, name='gate'):
-        with tf.variable_scope('rnn_cell'):
+        with tf.variable_scope(str(self.__id) + 'rnn_cell'):
             gate = dict()
             gate['n'] = n
             gate['param'] = {'w': None, 'b': None, 'type': 'gate',
@@ -261,34 +276,34 @@ class Network:
         gate['a'] = activation
         return gate
 
-    def add_lstm_layer(self, n, use_last=False, peepholes=False, as_decoder=False, activation=tf.identity):
+    def add_lstm_layer(self, n, peepholes=False, reverse=False, as_decoder=False, activation=tf.identity):
         self.recurrent = True
-        self.use_last = use_last
+        # self.use_last = use_last
 
-        with tf.variable_scope('rnn_cell'):
+        with tf.variable_scope(str(self.__id) + 'rnn_cell'):
             layer = dict()
             layer['n'] = n
             layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
                               'arg': {'timesteps': None, 'hsubt': None, 'cell': None}}
 
             if as_decoder:
-                layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
+                layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
                                                       initializer=tf.truncated_normal(
                                                           (self.layers[-2]['n'] + layer['n'], layer['n']),
                                                           stddev=1. / np.sqrt(self.layers[-2]['n'])),
                                                       dtype=tf.float32)
             else:
 
-                layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
+                layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
                                                       initializer=tf.truncated_normal(
                                                           (self.layers[-1]['n'] + layer['n'], layer['n']),
                                                           stddev=1. / np.sqrt(self.layers[-1]['n'])),
                                                       dtype=tf.float32)
-            layer['param']['b'] = tf.get_variable('Layer' + str(len(self.layers)) + '_B',
+            layer['param']['b'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_B',
                                                   (layer['n']), dtype=tf.float32,
                                                   initializer=tf.constant_initializer(0.0))
 
-            layer['param']['arg']['cell'] = tf.get_variable('Layer' + str(len(self.layers)) + '_C',
+            layer['param']['arg']['cell'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_C',
                                                             (layer['n']), dtype=tf.float32,
                                                             initializer=tf.constant_initializer(0.0))
 
@@ -297,52 +312,55 @@ class Network:
         if peepholes:
             feeding_n += n
 
-        forget_g = self.__init_gate(n, feeding_n, tf.sigmoid, name='Layer' + str(len(self.layers)) + '_forget')
-        input_g = self.__init_gate(n, feeding_n, tf.sigmoid, name='Layer' + str(len(self.layers)) + '_input')
-        output_g = self.__init_gate(n, feeding_n, tf.sigmoid, name='Layer' + str(len(self.layers)) + '_output')
+        forget_g = self.__init_gate(n, feeding_n, tf.sigmoid,
+                                    name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_forget')
+        input_g = self.__init_gate(n, feeding_n, tf.sigmoid,
+                                   name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_input')
+        output_g = self.__init_gate(n, feeding_n, tf.sigmoid,
+                                    name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_output')
 
         layer['a'] = activation
         L = self.layers
 
         def __lstm_step(state, input):
-            with tf.variable_scope('rnn_cell', reuse=True):
+            with tf.variable_scope(str(self.__id) + 'rnn_cell', reuse=True):
                 state = layer['a'](state)
-                W = tf.get_variable('Layer' + str(len(L)) + '_W')
+                W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
                 W = tf.identity(W)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', W)
 
-                b = tf.get_variable('Layer' + str(len(L)) + '_B')
+                b = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_B')
                 b = tf.identity(b)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', b)
 
-                C = tf.get_variable('Layer' + str(len(L)) + '_C')
+                C = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_C')
                 C = tf.identity(C)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', C)
 
                 # forget gate
-                forgetW = tf.get_variable('Layer' + str(len(L)) + '_forget_W')
+                forgetW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_forget_W')
                 forgetW = tf.identity(forgetW)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', forgetW)
 
-                forgetb = tf.get_variable('Layer' + str(len(L)) + '_forget_B')
+                forgetb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_forget_B')
                 forgetb = tf.identity(forgetb)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', forgetb)
 
                 # input gate
-                inputW = tf.get_variable('Layer' + str(len(L)) + '_input_W')
+                inputW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_input_W')
                 inputW = tf.identity(inputW)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', inputW)
 
-                inputb = tf.get_variable('Layer' + str(len(L)) + '_input_B')
+                inputb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_input_B')
                 inputb = tf.identity(inputb)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', inputb)
 
                 # output gate
-                outputW = tf.get_variable('Layer' + str(len(L)) + '_output_W')
+                outputW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_output_W')
                 outputW = tf.identity(outputW)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', outputW)
 
-                outputb = tf.get_variable('Layer' + str(len(L)) + '_output_B')
+                outputb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_output_B')
                 outputb = tf.identity(outputb)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', outputb)
 
@@ -370,8 +388,14 @@ class Network:
 
         if not as_decoder:
             init = tf.Variable(tf.ones((1, layer['n'])) * 0.0)
-            lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
-                              initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
+
+            if reverse:
+                lstm_zs = tf.reverse(
+                    tf.scan(__lstm_step, tf.reverse(tf.transpose(self.layers[-1]['h'], [1, 0, 2]), axis=[0]),
+                            initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']])), axis=[0])
+            else:
+                lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
+                                  initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
         else:
             init = tf.transpose(self.layers[-1]['h'], [1, 0, 2])[-1]
 
@@ -388,9 +412,51 @@ class Network:
             self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
-    def add_gru_layer(self, n, use_last=False, activation=tf.identity):
+    def add_bidirectional_lstm_layer(self, n,  peepholes=False, as_decoder=False, activation=tf.identity):
         self.recurrent = True
-        self.use_last = use_last
+        # self.use_last = use_last
+
+        layer = dict()
+        layer['n'] = n*2
+        layer['param'] = {'w': None, 'b': None, 'type': 'merge', 'arg': None}
+
+        deepest_rec = self.deepest_recurrent_layer
+        deepest_hid = self.deepest_hidden_layer
+        deepest_hid_ind = self.__deepest_hidden_layer_ind
+
+        self.add_lstm_layer(n, peepholes=peepholes, as_decoder=as_decoder)
+        forward = self.layers[-1]
+        del self.layers[-1]
+        self.layers.insert(0, dict())
+
+        self.add_lstm_layer(n, peepholes=peepholes, reverse=True, as_decoder=as_decoder)
+        reverse = self.layers[-1]
+
+        self.layers.insert(-1,forward)
+        del self.layers[0]
+
+        self.deepest_recurrent_layer = deepest_rec
+        self.deepest_hidden_layer = deepest_hid
+        self.__deepest_hidden_layer_ind = deepest_hid_ind
+
+        bsize = tf.shape(self.layers[-1]['h'])[0]
+        layer['z'] = tf.concat([forward['h'],reverse['h']], -1)
+        layer['a'] = activation
+        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, layer['n']]))
+
+        self.layers.insert(max(0, len(self.layers)), layer)
+
+        self.deepest_recurrent_layer = len(self.layers) - 1
+
+        if self.__tmp_multi_out is None and not as_decoder:
+            self.deepest_hidden_layer = self.layers[-1]
+            self.__deepest_hidden_layer_ind = len(self.layers) - 1
+
+        return self
+
+    def add_gru_layer(self, n,  activation=tf.identity):
+        self.recurrent = True
+        # self.use_last = use_last
 
         with tf.variable_scope('rnn_cell'):
             layer = dict()
@@ -398,19 +464,19 @@ class Network:
             layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
                               'arg': {'timesteps': None, 'hsubt': None, 'cell': None}}
 
-            layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
+            layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
                                                   initializer=tf.truncated_normal(
                                                       (self.layers[-1]['n'] + layer['n'], layer['n']),
                                                       stddev=1. / np.sqrt(self.layers[-1]['n'])),
                                                   dtype=tf.float32)
-            layer['param']['b'] = tf.get_variable('Layer' + str(len(self.layers)) + '_B',
+            layer['param']['b'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_B',
                                                   (layer['n']), dtype=tf.float32,
                                                   initializer=tf.constant_initializer(0.0))
 
         update_g = self.__init_gate(n, self.layers[-1]['n'] + n, activation=tf.sigmoid,
-                                    name='Layer' + str(len(self.layers)) + '_update')
+                                    name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_update')
         reset_g = self.__init_gate(n, self.layers[-1]['n'] + n, activation=tf.sigmoid,
-                                   name='Layer' + str(len(self.layers)) + '_reset')
+                                   name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_reset')
 
         layer['a'] = activation
         L = self.layers
@@ -418,27 +484,27 @@ class Network:
         def __gru_step(state, input):
             with tf.variable_scope('rnn_cell', reuse=True):
                 state = layer['a'](state)
-                W = tf.get_variable('Layer' + str(len(L)) + '_W')
+                W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
                 W = tf.identity(W)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', W)
 
-                b = tf.get_variable('Layer' + str(len(L)) + '_B')
+                b = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_B')
                 b = tf.identity(b)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', b)
 
-                updateW = tf.get_variable('Layer' + str(len(L)) + '_update_W')
+                updateW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_update_W')
                 updateW = tf.identity(updateW)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', updateW)
 
-                updateb = tf.get_variable('Layer' + str(len(L)) + '_update_B')
+                updateb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_update_B')
                 updateb = tf.identity(updateb)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', updateb)
 
-                resetW = tf.get_variable('Layer' + str(len(L)) + '_reset_W')
+                resetW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_reset_W')
                 resetW = tf.identity(resetW)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', resetW)
 
-                resetb = tf.get_variable('Layer' + str(len(L)) + '_reset_B')
+                resetb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_reset_B')
                 resetb = tf.identity(resetb)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', resetb)
 
@@ -467,9 +533,9 @@ class Network:
             self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
-    def add_rnn_layer(self, n, use_last=False, activation=tf.identity):
+    def add_rnn_layer(self, n, activation=tf.identity):
         self.recurrent = True
-        self.use_last = use_last
+        # self.use_last = use_last
 
         with tf.variable_scope('rnn_cell'):
             layer = dict()
@@ -477,16 +543,16 @@ class Network:
             layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
                               'arg': {'init': None, 'hsubt': None, 'cell': None}}
 
-            layer['param']['w'] = tf.get_variable('Layer' + str(len(self.layers)) + '_W',
+            layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
                                                   initializer=tf.truncated_normal(
                                                       (self.layers[-1]['n'] + layer['n'], layer['n']),
                                                       stddev=1. / np.sqrt(self.layers[-1]['n'])),
                                                   dtype=tf.float32)
-            layer['param']['b'] = tf.get_variable('Layer' + str(len(self.layers)) + '_B',
+            layer['param']['b'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_B',
                                                   (layer['n']), dtype=tf.float32,
                                                   initializer=tf.constant_initializer(0.0))
             layer['param']['arg']['init'] = tf.Variable(tf.zeros((1, layer['n'])),
-                                                        name='Layer' + str(len(self.layers)) + '_init')
+                                                        name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_init')
 
         layer['a'] = activation
         L = self.layers
@@ -494,11 +560,11 @@ class Network:
         def __rnn_step(state, input):
             with tf.variable_scope('rnn_cell', reuse=True):
                 state = layer['a'](state)
-                W = tf.get_variable('Layer' + str(len(L)) + '_W')
+                W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
                 W = tf.identity(W)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', W)
 
-                b = tf.get_variable('Layer' + str(len(L)) + '_B')
+                b = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_B')
                 b = tf.identity(b)
                 tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', b)
 
@@ -775,8 +841,8 @@ class Network:
         # print(np.array(y, dtype=object))
         # exit(1)
         series_label = None
-        if not self.use_last:
-            series_label = y[s][valid]
+        # if not self.use_last:
+        series_label = y[s][valid]
         n_timestep = max([len(k) for k in series_batch])
 
         series_batch_padded = np.array(
@@ -858,14 +924,9 @@ class Network:
         print("{:=<40}".format(''))
         print("{:^40}".format("Training Network"))
         print("{:=<40}".format(''))
-        structure = "{}n".format(self.layers[0]['n'])
-        for i in range(1, self.__deepest_hidden_layer_ind + 1):
-            structure += " -> {}n".format(self.layers[i]['n'])
-        structure += " -> {}n".format(self.layers[self.__output_layers[0]]['n'])
-        for i in range(1, len(self.__outputs)):
-            structure += ", {}n".format(self.layers[self.__output_layers[i]]['n'])
 
-        print("-{} layers: {}".format(len(self.layers), structure))
+        structure = describe_network_structure(self)
+        print("-{} layers: {}".format(structure['n_layers'], structure['string']))
         print("-{} epochs".format(max_epochs))
         print("-step size = {}".format(step))
         print("-batch size = {}".format(batch))
@@ -1157,8 +1218,8 @@ class Network:
                 exit(1)
 
             series_label = None
-            if not self.use_last:
-                series_label = y[valid]
+            # if not self.use_last:
+            series_label = y[valid]
             n_timestep = max([len(k) for k in series_batch])
 
             series_batch_padded = np.array(
@@ -1306,6 +1367,39 @@ def softmax(z):
     return t / np.sum(t, axis=1, keepdims=True)
 
 
+def describe_network_structure(net):
+
+    structure = dict()
+    nodes = []
+    for i in range(net.get_deepest_hidden_layer_index() + 1):
+        if net.layers[i]['param']['type'] == 'merge':
+            continue
+        if i < net.get_deepest_hidden_layer_index() and net.layers[i+1]['param']['type'] == 'merge':
+                nodes[-1].append(net.layers[i]['n'])
+        else:
+            nodes.append([net.layers[i]['n']])
+
+    if len(net.layers) > net.get_deepest_hidden_layer_index() + 1:
+        nodes.append([])
+        for i in range(net.get_deepest_hidden_layer_index() + 1, len(net.layers)):
+            if net.layers[i]['param']['type'] == 'inverse':
+                nodes[-1].append(net.layers[i]['n'])
+                if i < len(net.layers)-1:
+                    nodes.append([])
+            else:
+                nodes[-1].append(net.layers[i]['n'])
+
+    str_structure = []
+    for i in nodes:
+        str_structure.append(', '.join(['{}n'.format(j) for j in i]))
+
+    structure['n_layers'] = len(nodes)
+    structure['list'] = len(nodes)
+    structure['string'] = ' -> '.join(str_structure)
+
+    return structure
+
+
 def print_label_distribution(labels, label_names=None):
     # TODO: rewrite with new structure
     # TODO: move to datautility
@@ -1349,8 +1443,12 @@ def flatten_sequence(sequence, key=None):
         # try:
         ar = None
         ind = 0
+        # print('in flatten except')
+        # print(len(seq))
         for i in range(len(seq)):
             row = seq[i][0]
+
+            # print(row)
 
             for t in range(1, len(seq[i])):
                 ntime = len(seq[i][t])
@@ -1514,11 +1612,17 @@ def reshape_sequence(table, pivot, labels=None, columns=None, order=None, verbos
                 ind = 0
                 for j in labels:
                     mlabel = np.array(j).reshape((-1))
-                    # print(type(mlabel[0]))
-                    if type(mlabel[0]) == np.str_:
+                    is_str = False
+                    try:
+                        np.array(mlabel[0], dtype=np.int)
+                    except ValueError:
+                        is_str=True
+                    # print(mlabel[0])
+                    # print(is_str)
+                    if is_str:
                         lab[ind] = np.full((len(match), len(col)), mlabel[0])
                     else:
-                        lab[ind] = np.array(table[match, np.array(mlabel).reshape((-1, 1))],
+                        lab[ind] = np.array(table[match, np.array(mlabel, dtype=int).reshape((-1, 1))],
                                             dtype=np.float32).T[ordering].reshape((-1, len(mlabel)))
                     ind += 1
 
@@ -1723,6 +1827,26 @@ def Aprime(actual, predicted):
                 sum += 0
 
     return sum / (float(len(score[0])) * len(score[1]))
+
+
+def fill_input_multi_label(sequence_y, sequence_x, network):
+    desc = describe_multi_label(sequence_y)
+
+    for j in range(desc['n_label_sets']):
+        if type(sequence_y[0][j][0][0]) is np.str_:
+            print('Building label set {} from input...'.format(j))
+            if sequence_y[0][j][0][0] == Network.RAW_INPUT:
+                target = network.raw_input
+            elif sequence_y[0][j][0][0] == Network.NORMALIZED_INPUT:
+                target = network.norm_input
+            else:
+                raise ValueError('Invalid label values for label set {}.'.format(j))
+
+            for i in range(desc['n_samples']):
+                fd = dict()
+                fd[network.layers[0]['z']] = [sequence_x[i]]
+                sequence_y[i][j] = network.session.run(target, feed_dict=fd)[0]
+    return sequence_y
 
 
 def extract_from_multi_label(sequence_y, labels):
@@ -2002,14 +2126,14 @@ def run_experiments(lb):
 
     # outputlabel += '_as'
 
-    max_epochs = 100
+    max_epochs = 3
     use_validation = True
 
     hidden = [200]
     batch = [32]
     layers = [1]
     keep = [.5]
-    step = [1e-4]
+    step = [1e-2]
     threshold = [0.0001]
     optimizer = [Optimizer.ADAM]
     AE = [False]
@@ -2028,9 +2152,9 @@ def run_experiments(lb):
 
     print('seq_k_' + outputlabel + '.npy')
 
-    seq['x'] = np.array(x)
-    seq['y'] = np.array(y)
-    seq['key'] = np.array(k)
+    seq['x'] = np.array(x) [:100]
+    seq['y'] = np.array(y) [:100]
+    seq['key'] = np.array(k) [:100]
 
     """
     # prints the number of samples, label sets, and number of classes per label set (with averages)
@@ -2056,9 +2180,9 @@ def run_experiments(lb):
     non_af_labels = extract_from_multi_label(np.array(y), [0,1,2,3])
     """
 
-    # subset = [0, 1, 2, 3, 4]
-    # out_lb = np.array(outputlabel.split('_'))[subset]
-    # seq['y'] = extract_from_multi_label(np.array(y), subset)
+    subset = [0,1,2]
+    out_lb = np.array(outputlabel.split('_'))[subset]
+    seq['y'] = extract_from_multi_label(np.array(y), subset)
 
     # flatk = np.load('flat_k_' + outputlabel + '.npy')
     # flatx = np.load('flat_x_' + outputlabel + '.npy')
@@ -2308,6 +2432,41 @@ def run_experiments(lb):
 
 if __name__ == "__main__":
     # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
+
+    net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
+    net.add_bidirectional_lstm_layer(100, activation=tf.identity)
+
+    net.add_dropout_layer(50, keep=.5, activation=tf.nn.sigmoid)
+
+    net.add_inverse_layer(-1)
+
+    net2 = Network().add_input_layer_from_network(net,net.get_deepest_hidden_layer_index())
+    net2.add_dropout_layer(10, keep=.5, activation=tf.nn.sigmoid)
+
+    net2.begin_multi_output()
+
+    net2.add_dropout_layer(1, keep=.5, activation=tf.nn.sigmoid)
+    net2.add_dropout_layer(3, keep=.5, activation=tf.nn.sigmoid)
+    net2.add_dropout_layer(2, keep=.5, activation=tf.nn.sigmoid)
+    net2.add_dropout_layer(4, keep=.5, activation=tf.nn.sigmoid)
+
+    net2.end_multi_output()
+
+    net3 = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
+    net3.add_lstm_layer(100, activation=tf.identity)
+    net3.add_lstm_layer(100, as_decoder=True, activation=tf.identity)
+    net3.add_dropout_layer(92, keep=.5, activation=tf.nn.sigmoid)
+
+    # net.add_dropout_layer(4, keep=k, activation=tf.nn.softmax) # affect
+
+
+    describe_network_structure(net)
+
+    describe_network_structure(net2)
+
+    describe_network_structure(net3)
+    exit(1)
+
 
     starttime = time.time()
 
