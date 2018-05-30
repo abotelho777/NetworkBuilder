@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow.contrib import graph_editor
 from datautility import deprecated
 import datautility as du
 import evaluationutility as eu
@@ -53,6 +54,7 @@ class Network:
 
     def __init__(self):
         self.__id = Network.__get_next_id__()
+        self.scope_name = 'network{}'.format(self.__id)
         self.layers = []
         self.__is_init = False
         self.step_size = None
@@ -96,6 +98,11 @@ class Network:
 
         self.session = tf.InteractiveSession(config=tf.ConfigProto(device_count={'GPU': 0}))  # use CPU
         # self.session = tf.InteractiveSession()  # use GPU
+        self.saver = None
+        self.save_path = None
+
+    def get_network_id(self):
+        return self.__id
 
     def set_default_cost_method(self, cost_method=Cost.MSE):
         self.cost_method = cost_method
@@ -166,26 +173,27 @@ class Network:
 
     def add_input_layer(self, n, normalization=Normalization.NONE):
         layer = dict()
-        layer['n'] = n
-        layer['z'] = tf.placeholder(tf.float32, [None, None, n], name='x')
-        layer['param'] = {'w': None, 'b': None, 'type': 'input',
-                          'arg': {'stat1': tf.placeholder_with_default(tf.zeros([n]), shape=[n],
-                                                                       name='input_stat1'),
-                                  'stat2': tf.placeholder_with_default(tf.ones([n]), shape=[n],
-                                                                       name='input_stat2')}}
+        with tf.variable_scope(self.scope_name):
+            layer['n'] = n
+            layer['z'] = tf.placeholder(tf.float32, [None, None, n], name='x')
+            layer['param'] = {'w': None, 'b': None, 'type': 'input',
+                              'arg': {'stat1': tf.placeholder_with_default(tf.zeros([n]), shape=[n],
+                                                                           name='input_stat1'),
+                                      'stat2': tf.placeholder_with_default(tf.ones([n]), shape=[n],
+                                                                           name='input_stat2')}}
 
-        layer['a'] = tf.identity
+            layer['a'] = tf.identity
 
-        self.normalization = normalization
-        if normalization == Normalization.Z_SCORE:
-            layer['h'] = layer['a']((layer['z'] - layer['param']['arg']['stat1']) /
-                                    tf.maximum(layer['param']['arg']['stat2'], tf.constant(1e-12, dtype=tf.float32)))
-        elif normalization == Normalization.MAX:
-            layer['h'] = layer['a']((layer['z'] - layer['param']['arg']['stat2']) /
-                                    tf.maximum(layer['param']['arg']['stat1'] - layer['param']['arg']['stat2'],
-                                               tf.constant(1e-12, dtype=tf.float32)))
-        else:
-            layer['h'] = layer['a'](layer['z'])
+            self.normalization = normalization
+            if normalization == Normalization.Z_SCORE:
+                layer['h'] = layer['a']((layer['z'] - layer['param']['arg']['stat1']) /
+                                        tf.maximum(layer['param']['arg']['stat2'], tf.constant(1e-12, dtype=tf.float32)))
+            elif normalization == Normalization.MAX:
+                layer['h'] = layer['a']((layer['z'] - layer['param']['arg']['stat2']) /
+                                        tf.maximum(layer['param']['arg']['stat1'] - layer['param']['arg']['stat2'],
+                                                   tf.constant(1e-12, dtype=tf.float32)))
+            else:
+                layer['h'] = layer['a'](layer['z'])
 
         self.raw_input = layer['z']
         self.norm_input = layer['h']
@@ -220,20 +228,56 @@ class Network:
         self.__deepest_hidden_layer_ind = len(self.layers) - 1
         return self
 
+    def copy_layer_from_network(self, network, layer_index):
+        layer = network.layers[layer_index]
+        network = Network()
+        if layer['param']['type'] == 'input':
+            self.add_input_layer(layer['n'], network.normalization)
+
+        elif layer['param']['type'] == 'dense':
+            pass
+        elif layer['param']['type'] == 'inverse':
+            pass
+        elif layer['param']['type'] == 'lstm':
+            self.add_lstm_layer(**layer['param']['ctor'])
+
+
+            self.layers[-1]['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
+                                                  initializer=tf.truncated_normal(
+                                                      (self.layers[-1]['n'] + layer['n'], layer['n']),
+                                                      stddev=1. / np.sqrt(self.layers[-1]['n'])),
+                                                  dtype=tf.float32)
+            layer['param']['b'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_B',
+                                                  (layer['n']), dtype=tf.float32,
+                                                  initializer=tf.constant_initializer(0.0))
+
+            layer['param']['arg']['cell'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_C',
+                                                            (layer['n']), dtype=tf.float32,
+                                                            initializer=tf.constant_initializer(0.0))
+        elif layer['param']['type'] == 'gru':
+            pass
+        elif layer['param']['type'] == 'rnn':
+            pass
+        elif layer['param']['type'] == 'merge':
+            pass
+        elif layer['param']['type'] == 'dropout':
+            pass
+
     def add_dense_layer(self, n, activation=tf.identity):
         layer = dict()
-        layer['n'] = n
-        layer['param'] = {'w': None, 'b': None, 'type': 'dense', 'arg': None}
-        layer['param']['w'] = tf.Variable(tf.truncated_normal((self.layers[-1]['n'], layer['n']),
-                                                              stddev=1. / np.sqrt(self.layers[-1]['n'])),
-                                          dtype=tf.float32, name='Layer' + str(len(self.layers)) + '_W')
-        layer['param']['b'] = tf.Variable(tf.zeros([layer['n']]), name='Layer' + str(len(self.layers)) + '_B')
+        with tf.variable_scope(self.scope_name):
+            layer['n'] = n
+            layer['param'] = {'w': None, 'b': None, 'type': 'dense', 'arg': None}
+            layer['param']['w'] = tf.Variable(tf.truncated_normal((self.layers[-1]['n'], layer['n']),
+                                                                  stddev=1. / np.sqrt(self.layers[-1]['n'])),
+                                              dtype=tf.float32, name='Layer' + str(len(self.layers)) + '_W')
+            layer['param']['b'] = tf.Variable(tf.zeros([layer['n']]), name='Layer' + str(len(self.layers)) + '_B')
 
-        bsize = tf.shape(self.layers[-1]['h'])[0]
-        layer['z'] = tf.matmul(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]), layer['param']['w']) + \
-                     layer['param']['b']
-        layer['a'] = activation
-        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, n]))
+            bsize = tf.shape(self.layers[-1]['h'])[0]
+            layer['z'] = tf.matmul(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
+                                   layer['param']['w']) + layer['param']['b']
+            layer['a'] = activation
+            layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, n]))
         self.layers.insert(max(0, len(self.layers)), layer)
         if self.__tmp_multi_out is None:
             self.deepest_hidden_layer = self.layers[-1]
@@ -246,22 +290,23 @@ class Network:
         assert layer_index > 0 and layer_index < len(self.layers)
         inv = self.layers[layer_index]
         layer = dict()
-        layer['n'] = self.layers[layer_index - 1]['n']
-        layer['param'] = {'w': None, 'b': None, 'type': 'inverse', 'arg': layer_index}
-        layer['param']['w'] = None
-        layer['param']['b'] = tf.Variable(tf.zeros([layer['n']]))
+        with tf.variable_scope(self.scope_name):
+            layer['n'] = self.layers[layer_index - 1]['n']
+            layer['param'] = {'w': None, 'b': None, 'type': 'inverse', 'arg': layer_index}
+            layer['param']['w'] = None
+            layer['param']['b'] = tf.Variable(tf.zeros([layer['n']]))
 
-        bsize = tf.shape(self.layers[-1]['h'])[0]
-        layer['z'] = tf.matmul(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
-                               tf.transpose(inv['param']['w'])) + \
-                     layer['param']['b']
-        layer['a'] = activation
-        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, self.layers[layer_index - 1]['n']]))
+            bsize = tf.shape(self.layers[-1]['h'])[0]
+            layer['z'] = tf.matmul(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
+                                   tf.transpose(inv['param']['w'])) + \
+                         layer['param']['b']
+            layer['a'] = activation
+            layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, self.layers[layer_index - 1]['n']]))
         self.layers.insert(max(0, len(self.layers)), layer)
         return self
 
     def __init_gate(self, n, feeding_n, activation=tf.identity, name='gate'):
-        with tf.variable_scope(str(self.__id) + 'rnn_cell'):
+        with tf.variable_scope(self.scope_name):
             gate = dict()
             gate['n'] = n
             gate['param'] = {'w': None, 'b': None, 'type': 'gate',
@@ -273,18 +318,20 @@ class Network:
             gate['param']['b'] = tf.get_variable(name + '_B', (gate['n']), dtype=tf.float32,
                                                  initializer=tf.constant_initializer(0.0))
 
-        gate['a'] = activation
+            gate['a'] = activation
         return gate
 
     def add_lstm_layer(self, n, peepholes=False, reverse=False, as_decoder=False, activation=tf.identity):
         self.recurrent = True
         # self.use_last = use_last
 
-        with tf.variable_scope(str(self.__id) + 'rnn_cell'):
+        with tf.variable_scope(self.scope_name):
             layer = dict()
             layer['n'] = n
-            layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
-                              'arg': {'timesteps': None, 'hsubt': None, 'cell': None}}
+            layer['param'] = {'w': None, 'b': None, 'type': 'lstm',
+                              'arg': {'timesteps': None, 'hsubt': None, 'cell': None},
+                              'ctor':{'n':n,'peepholes':peepholes,'reverse':reverse,
+                                      'as_decoder':as_decoder,'activation':activation}}
 
             if as_decoder:
                 layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
@@ -307,6 +354,8 @@ class Network:
                                                             (layer['n']), dtype=tf.float32,
                                                             initializer=tf.constant_initializer(0.0))
 
+            layer['a'] = activation
+
         feeding_n = self.layers[-1]['n'] + n if not as_decoder else self.layers[-2]['n'] + n
 
         if peepholes:
@@ -319,90 +368,91 @@ class Network:
         output_g = self.__init_gate(n, feeding_n, tf.sigmoid,
                                     name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_output')
 
-        layer['a'] = activation
+
         L = self.layers
 
         def __lstm_step(state, input):
-            with tf.variable_scope(str(self.__id) + 'rnn_cell', reuse=True):
-                state = layer['a'](state)
-                W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
-                W = tf.identity(W)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', W)
+            # with tf.variable_scope(self.scope_name, reuse=True):
+            state = layer['a'](state)
+            W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
+            W = tf.identity(W)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', W)
 
-                b = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_B')
-                b = tf.identity(b)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', b)
+            b = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_B')
+            b = tf.identity(b)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', b)
 
-                C = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_C')
-                C = tf.identity(C)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', C)
+            C = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_C')
+            C = tf.identity(C)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', C)
 
-                # forget gate
-                forgetW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_forget_W')
-                forgetW = tf.identity(forgetW)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', forgetW)
+            # forget gate
+            forgetW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_forget_W')
+            forgetW = tf.identity(forgetW)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', forgetW)
 
-                forgetb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_forget_B')
-                forgetb = tf.identity(forgetb)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', forgetb)
+            forgetb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_forget_B')
+            forgetb = tf.identity(forgetb)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', forgetb)
 
-                # input gate
-                inputW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_input_W')
-                inputW = tf.identity(inputW)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', inputW)
+            # input gate
+            inputW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_input_W')
+            inputW = tf.identity(inputW)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', inputW)
 
-                inputb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_input_B')
-                inputb = tf.identity(inputb)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', inputb)
+            inputb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_input_B')
+            inputb = tf.identity(inputb)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', inputb)
 
-                # output gate
-                outputW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_output_W')
-                outputW = tf.identity(outputW)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', outputW)
+            # output gate
+            outputW = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_output_W')
+            outputW = tf.identity(outputW)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'W', outputW)
 
-                outputb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_output_B')
-                outputb = tf.identity(outputb)
-                tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', outputb)
+            outputb = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_output_B')
+            outputb = tf.identity(outputb)
+            tf.get_default_graph().add_to_collection('R' + str(len(L)) + 'b', outputb)
 
-                concat = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), state], 1)
-                cell_prime = tf.tanh(tf.matmul(concat, W) + b)
+            concat = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), state], 1)
+            cell_prime = tf.tanh(tf.matmul(concat, W) + b)
 
-                p_concat = state if not peepholes else tf.concat([state, tf.cast(tf.reshape(
-                    tf.tile(C, [tf.shape(state)[0]]), [-1, layer['n']]), tf.float32)], 1)
+            p_concat = state if not peepholes else tf.concat([state, tf.cast(tf.reshape(
+                tf.tile(C, [tf.shape(state)[0]]), [-1, layer['n']]), tf.float32)], 1)
 
-                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), p_concat], 1)
+            concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), p_concat], 1)
 
-                forget_h = forget_g['a'](tf.matmul(concat_g, forgetW) + forgetb)
-                input_h = input_g['a'](tf.matmul(concat_g, inputW) + inputb)
+            forget_h = forget_g['a'](tf.matmul(concat_g, forgetW) + forgetb)
+            input_h = input_g['a'](tf.matmul(concat_g, inputW) + inputb)
 
-                C = (C * forget_h) + (cell_prime * input_h)
+            C = (C * forget_h) + (cell_prime * input_h)
 
-                pr_concat = state if not peepholes else tf.concat([state, C], 1)
-                concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), pr_concat], 1)
-                output_h = output_g['a'](tf.matmul(concat_g, outputW) + outputb)
+            pr_concat = state if not peepholes else tf.concat([state, C], 1)
+            concat_g = tf.concat([tf.cast(tf.reshape(input, [-1, L[-1]['n'] if not as_decoder else L[-2]['n']]), tf.float32), pr_concat], 1)
+            output_h = output_g['a'](tf.matmul(concat_g, outputW) + outputb)
 
-                layer['z'] = (output_h * tf.tanh(C))
-                return layer['z']
+            layer['z'] = (output_h * tf.tanh(C))
+            return layer['z']
 
-        shape = tf.shape(self.layers[-1]['h'])
+        with tf.variable_scope(self.scope_name, reuse=True):
+            shape = tf.shape(self.layers[-1]['h'])
 
-        if not as_decoder:
-            init = tf.Variable(tf.ones((1, layer['n'])) * 0.0)
+            if not as_decoder:
+                init = tf.Variable(tf.ones((1, layer['n'])) * 0.0)
 
-            if reverse:
-                lstm_zs = tf.reverse(
-                    tf.scan(__lstm_step, tf.reverse(tf.transpose(self.layers[-1]['h'], [1, 0, 2]), axis=[0]),
-                            initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']])), axis=[0])
+                if reverse:
+                    lstm_zs = tf.reverse(
+                        tf.scan(__lstm_step, tf.reverse(tf.transpose(self.layers[-1]['h'], [1, 0, 2]), axis=[0]),
+                                initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']])), axis=[0])
+                else:
+                    lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
+                                      initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
             else:
-                lstm_zs = tf.scan(__lstm_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
-                                  initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
-        else:
-            init = tf.transpose(self.layers[-1]['h'], [1, 0, 2])[-1]
+                init = tf.transpose(self.layers[-1]['h'], [1, 0, 2])[-1]
 
-            lstm_zs = tf.scan(__lstm_step, tf.transpose(tf.zeros_like(self.layers[-2]['h']), [1, 0, 2]),
-                              initializer=tf.reshape(init, [-1, layer['n']]))
+                lstm_zs = tf.scan(__lstm_step, tf.transpose(tf.zeros_like(self.layers[-2]['h']), [1, 0, 2]),
+                                  initializer=tf.reshape(init, [-1, layer['n']]))
 
-        layer['h'] = layer['a'](tf.transpose(lstm_zs, [1, 0, 2]))
+            layer['h'] = layer['a'](tf.transpose(lstm_zs, [1, 0, 2]))
         self.layers.insert(max(0, len(self.layers)), layer)
 
         self.deepest_recurrent_layer = len(self.layers) - 1
@@ -439,10 +489,11 @@ class Network:
         self.deepest_hidden_layer = deepest_hid
         self.__deepest_hidden_layer_ind = deepest_hid_ind
 
-        bsize = tf.shape(self.layers[-1]['h'])[0]
-        layer['z'] = tf.concat([forward['h'],reverse['h']], -1)
-        layer['a'] = activation
-        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, layer['n']]))
+        with tf.variable_scope(self.scope_name):
+            bsize = tf.shape(self.layers[-1]['h'])[0]
+            layer['z'] = tf.concat([forward['h'],reverse['h']], -1)
+            layer['a'] = activation
+            layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, layer['n']]))
 
         self.layers.insert(max(0, len(self.layers)), layer)
 
@@ -458,10 +509,10 @@ class Network:
         self.recurrent = True
         # self.use_last = use_last
 
-        with tf.variable_scope('rnn_cell'):
+        with tf.variable_scope(self.scope_name):
             layer = dict()
             layer['n'] = n
-            layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
+            layer['param'] = {'w': None, 'b': None, 'type': 'gru',
                               'arg': {'timesteps': None, 'hsubt': None, 'cell': None}}
 
             layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
@@ -473,16 +524,17 @@ class Network:
                                                   (layer['n']), dtype=tf.float32,
                                                   initializer=tf.constant_initializer(0.0))
 
+            layer['a'] = activation
+
         update_g = self.__init_gate(n, self.layers[-1]['n'] + n, activation=tf.sigmoid,
                                     name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_update')
         reset_g = self.__init_gate(n, self.layers[-1]['n'] + n, activation=tf.sigmoid,
                                    name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_reset')
 
-        layer['a'] = activation
         L = self.layers
 
         def __gru_step(state, input):
-            with tf.variable_scope('rnn_cell', reuse=True):
+            with tf.variable_scope(self.scope_name, reuse=True):
                 state = layer['a'](state)
                 W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
                 W = tf.identity(W)
@@ -519,12 +571,14 @@ class Network:
 
                 return layer['z']
 
-        shape = tf.shape(self.layers[-1]['h'])
-        init = tf.Variable(tf.zeros((1, layer['n'])))
-        gru_zs = tf.scan(__gru_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
-                         initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
+        with tf.variable_scope(self.scope_name):
 
-        layer['h'] = layer['a'](tf.transpose(gru_zs, [1, 0, 2]))
+            shape = tf.shape(self.layers[-1]['h'])
+            init = tf.Variable(tf.zeros((1, layer['n'])))
+            gru_zs = tf.scan(__gru_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
+                             initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
+
+            layer['h'] = layer['a'](tf.transpose(gru_zs, [1, 0, 2]))
         self.layers.insert(max(0, len(self.layers)), layer)
         self.deepest_recurrent_layer = len(self.layers) - 1
 
@@ -537,10 +591,10 @@ class Network:
         self.recurrent = True
         # self.use_last = use_last
 
-        with tf.variable_scope('rnn_cell'):
+        with tf.variable_scope(self.scope_name):
             layer = dict()
             layer['n'] = n
-            layer['param'] = {'w': None, 'b': None, 'type': 'recurrent',
+            layer['param'] = {'w': None, 'b': None, 'type': 'rnn',
                               'arg': {'init': None, 'hsubt': None, 'cell': None}}
 
             layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
@@ -554,11 +608,11 @@ class Network:
             layer['param']['arg']['init'] = tf.Variable(tf.zeros((1, layer['n'])),
                                                         name=str(self.__id) + 'Layer' + str(len(self.layers)) + '_init')
 
-        layer['a'] = activation
+            layer['a'] = activation
         L = self.layers
 
         def __rnn_step(state, input):
-            with tf.variable_scope('rnn_cell', reuse=True):
+            with tf.variable_scope(self.scope_name, reuse=True):
                 state = layer['a'](state)
                 W = tf.get_variable(str(self.__id) + 'Layer' + str(len(L)) + '_W')
                 W = tf.identity(W)
@@ -574,12 +628,13 @@ class Network:
                 layer['z'] = tf.tanh(tf.matmul(concat, W) + b)
                 return layer['z']
 
-        shape = tf.shape(self.layers[-1]['h'])
-        init = tf.Variable(tf.zeros((1, layer['n'])))
-        rnn_zs = tf.scan(__rnn_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
-                         initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
+        with tf.variable_scope(self.scope_name):
+            shape = tf.shape(self.layers[-1]['h'])
+            init = tf.Variable(tf.zeros((1, layer['n'])))
+            rnn_zs = tf.scan(__rnn_step, tf.transpose(self.layers[-1]['h'], [1, 0, 2]),
+                             initializer=tf.reshape(tf.tile(init, [1, shape[0]]), [-1, layer['n']]))
 
-        layer['h'] = layer['a'](tf.transpose(rnn_zs, [1, 0, 2]))
+            layer['h'] = layer['a'](tf.transpose(rnn_zs, [1, 0, 2]))
         self.layers.insert(max(0, len(self.layers)), layer)
         self.deepest_recurrent_layer = len(self.layers) - 1
 
@@ -590,20 +645,24 @@ class Network:
 
     def add_dropout_layer(self, n, keep=0.5, activation=tf.identity):
         layer = dict()
-        layer['n'] = n
-        layer['param'] = {'w': None, 'b': None, 'type': 'dropout',
-                          'arg': tf.placeholder(tf.float32, name='keep')}
+        with tf.variable_scope(self.scope_name):
+            layer['n'] = n
+            layer['param'] = {'w': None, 'b': None, 'type': 'dropout',
+                              'arg': tf.placeholder(tf.float32, name='keep')}
 
-        layer['param']['w'] = tf.Variable(tf.truncated_normal((self.layers[-1]['n'], layer['n']),
-                                                              stddev=1. / np.sqrt(self.layers[-1]['n'])),
-                                          dtype=tf.float32)
-        layer['param']['b'] = tf.Variable(tf.zeros([layer['n']]))
+            layer['param']['w'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_W',
+                                                  initializer=tf.truncated_normal((self.layers[-1]['n'], layer['n']),
+                                                                  stddev=1. / np.sqrt(self.layers[-1]['n'])),
+                                                  dtype=tf.float32)
+            layer['param']['b'] = tf.get_variable(str(self.__id) + 'Layer' + str(len(self.layers)) + '_B',
+                                                  (layer['n']), dtype=tf.float32,
+                                                  initializer=tf.constant_initializer(0.0))
 
-        bsize = tf.shape(self.layers[-1]['h'])[0]
-        layer['z'] = tf.matmul(tf.nn.dropout(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
-                                             layer['param']['arg']), layer['param']['w']) + layer['param']['b']
-        layer['a'] = activation
-        layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, n]))
+            bsize = tf.shape(self.layers[-1]['h'])[0]
+            layer['z'] = tf.matmul(tf.nn.dropout(tf.reshape(self.layers[-1]['h'], [-1, self.layers[-1]['n']]),
+                                                 layer['param']['arg']), layer['param']['w']) + layer['param']['b']
+            layer['a'] = activation
+            layer['h'] = layer['a'](tf.reshape(layer['z'], [bsize, -1, n]))
         self.layers.insert(max(0, len(self.layers)), layer)
         self.args[self.layers[-1]['param']['arg']] = keep
         if self.__tmp_multi_out is None:
@@ -614,7 +673,9 @@ class Network:
     def __initialize(self):
         if not self.__is_init:
 
+
             self.y = []
+            self.c = []
             # print(self.cost_method)
 
             if len(self.__outputs) == 0:
@@ -801,6 +862,8 @@ class Network:
                 w = self.__output_weights[i]
                 # # w = tf.gather(self.__output_tf_wts, tf.constant(i))
                 # min_w = tf.gather(self.__output_tf_wts, tf.argmin(self.__output_tf_wts))
+                self.c.append(w*cost_fn)
+
                 if self.cost_function is None:
                     self.cost_function = w * cost_fn
                 else:
@@ -829,6 +892,30 @@ class Network:
             # tf.get_default_graph().finalize()
 
             self.__is_init = True
+
+    def save_model_weights(self):
+        if not os.path.exists('temp/'):
+            os.makedirs('temp/')
+        if not os.path.exists('temp/model{}'.format(self.get_network_id())):
+            os.makedirs('temp/model{}'.format(self.get_network_id()))
+        self.saver = tf.train.Saver()
+        self.save_path = self.saver.save(self.session, 'temp/model{}/mod'.format(self.get_network_id()))
+
+    def restore_model_weights(self):
+        self.saver = tf.train.import_meta_graph('temp/model{}/mod.meta'.format(self.get_network_id()))
+        self.saver.restore(self.session, tf.train.latest_checkpoint('temp/model{}/'.format(self.get_network_id())))
+
+    def rename_network(self, name):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            sgv = graph_editor.make_view_from_scope(self.scope_name, self.graph)
+            graph_editor.copy(sgv, self.graph, name, self.scope_name, True)
+
+        # graph_editor.detach_(sgv)
+
+        self.scope_name = name
 
     def __backprop_through_time(self, x, y, s):
         batch_cost = []
@@ -875,7 +962,12 @@ class Network:
         if np.all(nan_check) or len(nan_check) == 0:
             return None
 
-        # print(self.session.run(self.layers[0]['h'], feed_dict=self.args))
+        # print(self.session.run(self.layers[-1]['h'], feed_dict=self.args))
+        # print(self.session.run(self.layers[-2]['h'], feed_dict=self.args))
+        # print(self.session.run(self.layers[-3]['h'], feed_dict=self.args))
+        # print(self.session.run(self.layers[-4]['h'], feed_dict=self.args))
+        # print(self.session.run(self.layers[-5]['h'], feed_dict=self.args))
+        # print(self.session.run([self.c[0],self.c[1],self.c[2],self.c[3],self.c[4]],feed_dict=self.args))
         # exit(1)
 
         # self.session.run([self.update_weights], feed_dict=self.args)
@@ -896,6 +988,11 @@ class Network:
         batch_cost.append(cost)
 
         return batch_cost
+
+    def build(self):
+        self.step_size = 0.1
+        self.__initialize()
+        return self
 
     def train(self, x, y, use_validation=True, validation_data=None, validation_labels=None,
               step=0.1, max_epochs=100, threshold=0.01, batch=1):
@@ -921,6 +1018,27 @@ class Network:
 
         self.__initialize()
 
+        if self.optimizer == Optimizer.ADAM:
+            self.update = tf.train.AdamOptimizer(self.step_size, name='update')
+        elif self.optimizer == Optimizer.ADAGRAD:
+            self.update = tf.train.AdagradOptimizer(self.step_size, name='update')
+        else:
+            self.update = tf.train.GradientDescentOptimizer(self.step_size, name='update')
+
+        # for n in tf.get_default_graph().as_graph_def().node:
+        #     print(n.name,n.input)
+        #
+        # for n in range(50):
+        #     print('=============================================================================================')
+        # self.rename_network('asdf')
+        # for n in range(50):
+        #     print('=============================================================================================')
+        #
+        # for n in tf.get_default_graph().as_graph_def().node:
+        #     print(n.name,n.input)
+
+
+        # exit(1)
         print("{:=<40}".format(''))
         print("{:^40}".format("Training Network"))
         print("{:=<40}".format(''))
@@ -1005,7 +1123,8 @@ class Network:
 
         e = 1
         e_cost = []
-        while True:
+
+        while e <= max_epochs:
             epoch_start = time.time()
 
             v = list(range(x.shape[0]))
@@ -1797,7 +1916,10 @@ def generate_folds(key, folds=5):
 
 def fold_by_key(key_ar, key=0, folds=5):
     kar = np.array(key_ar).reshape((len(key_ar), -1))
-    return np.insert(kar, 0, np.array(generate_folds(kar[:, key], folds), dtype=str), axis=1)
+
+    return np.insert(kar, 0, np.array(generate_folds(
+        np.array(['~'.join(np.array([i], dtype=str).ravel()) for i in kar[:, np.array([key]).ravel()]]).reshape((-1)),
+        folds), dtype=str), axis=1)
 
 
 @deprecated
@@ -1954,7 +2076,9 @@ def one_hot_multi_label(sequence_y, labels):
             if j in labels:
                 seq_lb = []
                 for k in sequence_y[i][labels[j]]:
-                    seq_lb.append(np.array([int(k[0] == cl[j][s]) for s in range(len(cl[j]))]))
+                    # print(k)
+                    seq_lb.append(
+                        np.array([np.nan if np.isnan(k) else int(k[0] == cl[j][s]) for s in range(len(cl[j]))]))
                 set[j] = seq_lb
             else:
                 set[j] = sequence_y[i][j]
@@ -1986,6 +2110,84 @@ def ravel_multi_label(sequence_y):
         seq_y.append(set)
 
     return np.array(seq_y)
+
+
+def find_in_multi_label(sequence_y, value):
+    desc = describe_multi_label(sequence_y)
+
+    f_ind = []
+
+    for i in range(desc['n_samples']):
+        for j in range(desc['n_label_sets']):
+            for k in range(len(sequence_y[i][j])):
+                for m in range(len(sequence_y[i][j][k])):
+                    if sequence_y[i][j][k][m] == value:
+                        f_ind.append([i,j,k,m])
+
+    return f_ind
+
+
+def find_and_replace_in_multi_label(sequence_y, find_value, replace_value, replace_all_classes=False):
+    desc = describe_multi_label(sequence_y)
+
+    f_ind = []
+
+    for i in range(desc['n_samples']):
+        for j in range(desc['n_label_sets']):
+            for k in range(len(sequence_y[i][j])):
+                if replace_all_classes:
+                    if find_value in sequence_y[i][j][k]:
+                        for m in range(len(sequence_y[i][j][k])):
+                            sequence_y[i][j][k][m] = replace_value
+                    else:
+                        for m in range(len(sequence_y[i][j][k])):
+                            if sequence_y[i][j][k][m] == find_value:
+                                sequence_y[i][j][k][m] = replace_value
+
+    return f_ind
+
+
+def replace_in_multi_label(sequence_y, indices, replace_value):
+    f_ind = []
+
+    for i in indices:
+        if not hasattr(i, '__iter__'):
+            i = [i]
+
+        if len(i) == 4:
+            try:
+                sequence_y[i[0]][i[1]][i[2]][i[3]] = replace_value
+            except IndexError:
+                raise IndexError(
+                    'Supplied index array [{}] is out of range for the sequence object.'.format(','.join(i)))
+        elif len(i) == 3:
+            try:
+                for j in range(len(sequence_y[i[0]][i[1]][i[2]])):
+                    sequence_y[i[0]][i[1]][i[2]][j] = replace_value
+            except IndexError:
+                raise IndexError(
+                    'Supplied index array [{}] is out of range for the sequence object.'.format(','.join(i)))
+        elif len(i) == 2:
+            try:
+                for j in range(len(sequence_y[i[0]][i[1]])):
+                    for k in range(len(sequence_y[i[0]][i[1]][j])):
+                        sequence_y[i[0]][i[1]][j][k] = replace_value
+            except IndexError:
+                raise IndexError(
+                    'Supplied index array [{}] is out of range for the sequence object.'.format(','.join(i)))
+        elif len(i) == 1:
+            try:
+                for j in range(len(sequence_y[i[0]])):
+                    for k in range(len(sequence_y[i[0]][j])):
+                        for m in range(len(sequence_y[i[0]][j][k])):
+                            sequence_y[i[0]][j][k][m] = replace_value
+            except IndexError:
+                raise IndexError(
+                    'Supplied index array [{}] is out of range for the sequence object.'.format(','.join(i)))
+        else:
+            raise IndexError('The supplied index array is in an invalid format.')
+
+    return f_ind
 
 
 def use_last_multi_label(sequence_y, labels):
