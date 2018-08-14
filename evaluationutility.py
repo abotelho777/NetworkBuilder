@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, r2_score
 from sklearn.metrics import mean_squared_error
 from skll.metrics import kappa as kpa
 

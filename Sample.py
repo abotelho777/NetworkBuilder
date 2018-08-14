@@ -153,6 +153,7 @@ def run_sample():
     # we can get the number of input nodes by looking at our formatted data
     n_cov = len(seq['x'][0][0])
 
+    # seq['y'] = tfnet.merge_multi_label(tfnet.extract_from_multi_label(seq['y'],[1,2,3,4]),tfnet.extract_from_multi_label(seq['y'],0))
     desc = tfnet.describe_multi_label(seq['y'], True)
 
     # now for model training - we use a for loop for the cross validation
@@ -171,6 +172,7 @@ def run_sample():
         # then we build the network
         net = Network().add_input_layer(n_cov, normalization=Normalization.Z_SCORE)
         net.add_lstm_layer(100, activation=tf.identity)
+        net.add_lstm_layer(100, activation=tf.identity)
 
         # layers between the begin/end multi output functions are created at the same level
         # and correspond with each of the label sets we've defined
@@ -179,6 +181,7 @@ def run_sample():
                                              Cost.BINARY_CROSS_ENTROPY,
                                              Cost.BINARY_CROSS_ENTROPY,
                                              Cost.BINARY_CROSS_ENTROPY])
+
         net.add_dropout_layer(4, keep=0.5, activation=tf.nn.softmax)
         net.add_dropout_layer(1, keep=0.5, activation=tf.nn.sigmoid)
         net.add_dropout_layer(1, keep=0.5, activation=tf.nn.sigmoid)
@@ -208,7 +211,7 @@ def run_sample():
         """
         net.train(x=seq['x'][training],
                   y=seq['y'][training],
-                  step=1e-3,
+                  step=1e-4,
                   use_validation=True,
                   max_epochs=100, threshold=0.0, batch=3)
         """

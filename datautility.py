@@ -95,6 +95,8 @@ def __load_csv__(filename, max_rows=None):
         old_str = output_str
         i = 0
         for line in f_lines:
+            if len(line) == 0:
+                continue
             line = np.array(line)
             na = np.argwhere(np.array(line[:]) == '#N/A').ravel()
             if len(na) > 0:
@@ -345,8 +347,9 @@ def print_descriptives(ar, headers=None, desc_level=1):
     ar = ar.reshape((-1,ar.shape[-1]))
 
     if headers is not None:
-        assert len(headers) == ar.shape[-1]
-        headers = [str(i) + ' ' + headers[i] for i in range(len(headers))]
+        # assert len(headers) == ar.shape[-1]
+        headers = [str(i) + ' ' + headers[i] if i < len(headers) else 'Covariate ' + str(i) for i in
+                   range(ar.shape[-1])]
     else:
         headers = ['Covariate ' + str(i) for i in range(ar.shape[-1])]
 
@@ -392,8 +395,11 @@ def ndims(ar):
         d += 1
         a = a[0]
 
-        if type(a) is np.string_ or type(a) is str:
+        try:
+            _ = '0' + a
             break
+        except TypeError:
+            pass
 
     return d
 
