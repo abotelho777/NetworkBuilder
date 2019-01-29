@@ -1,13 +1,9 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow.contrib import graph_editor
-from datautility import deprecated
 import datautility as du
-import evaluationutility as eu
 import warnings
-import visualizationutility as vu
 import time
-import pickle
 import csv
 import sys
 import os
@@ -31,6 +27,7 @@ class Cost:
     RMSE = 'rmse'
     ROUNDED_RMSE = 'rounded_rmse'
     CROSS_ENTROPY_RMSE = 'cross_entropy_rmse'
+    HINGE_LOSS = 'hinge_loss'
 
 
 class Optimizer:
@@ -654,6 +651,7 @@ class Network:
     def add_dropout_layer(self, n, keep=0.5, activation=tf.identity):
         layer = dict()
         connecting_layer = self.get_deepest_hidden_layer_index()
+
         with tf.variable_scope(self.scope_name):
             layer['n'] = n
             layer['param'] = {'w': None, 'b': None, 'type': 'dropout',
@@ -885,6 +883,23 @@ class Network:
                     cost_fn = tf.sqrt(sse / (tf.cast(tf.count_nonzero(sq_dif),
                                                      tf.float32) + tf.constant(1e-8, dtype=tf.float32)))
 
+                elif method == Cost.HINGE_LOSS:
+                    y_flat = tf.reshape(out_y, (-1, self.layers[self.__output_layers[i]]['n']))
+                    z_flat = tf.reshape(self.layers[self.__output_layers[i]]['z'],
+                                        (-1, self.layers[self.__output_layers[i]]['n']))
+
+                    non_nan = tf.where(tf.logical_and(tf.logical_not(tf.is_nan(z_flat)),
+                                                      tf.logical_and(tf.logical_not(tf.is_nan(y_flat)),
+                                                                     tf.logical_not(
+                                                                         tf.less(y_flat, tf.constant(-9e8))))))
+                    cost_fn = tf.reduce_mean(
+                        tf.losses.hinge_loss(
+                            labels=tf.reshape(tf.gather_nd(y_flat, non_nan),
+                                              (-1, self.layers[self.__output_layers[i]]['n'])),
+                            logits=tf.reshape(tf.gather_nd(z_flat, non_nan),
+                                              (-1, self.layers[self.__output_layers[i]]['n']))))
+
+                    # tf.losses.hinge_loss(
 
                 else:
                     sq_dif = tf.squared_difference(self.__outputs[i], tf.where(tf.is_nan(out_y),
@@ -980,7 +995,7 @@ class Network:
         arg_arr,_ = du.read_csv('temp/{}/args.csv'.format(self.scope_name))
         for k,v in arg_arr:
             self.args[self.graph.get_tensor_by_name(k)] = np.load(v)
-
+        sess.close()
 
     def rename_network(self, name):
         import warnings
@@ -1324,8 +1339,11 @@ class Network:
             print("{:=<50}".format(''))
         print("Total Time: {:<.1f}s".format(time.time() - train_start))
 
-    def predict(self, x, layer_index=-1):
+    def predict(self, x, layer_index=-1, batch=None):
         # TODO: add ability to predict from last hidden layer
+
+        if batch is None:
+            batch = x.shape[0]
 
         if not (du.ndims(x) == 3):
             pass
@@ -1342,53 +1360,62 @@ class Network:
                 pass
 
         if self.recurrent:
-            pred = []
+            pred = None
 
-            valid = np.argwhere(np.array([len(k) for k in x]) > 0).ravel()
-            series_batch = x[valid]
+            for b in range(0, x.shape[0], batch):
+                s = np.array(range(b, min(x.shape[0], b + batch)))
+                xb = x[s]
 
-            samp_timestep = [len(k) for k in series_batch]
-            n_timestep = max(samp_timestep)
+                valid = np.argwhere(np.array([len(k) for k in xb]) > 0).ravel()
+                series_batch = xb[valid]
 
-            series_batch_padded = np.array(
-                [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in series_batch])
+                samp_timestep = [len(k) for k in series_batch]
+                n_timestep = max(samp_timestep)
 
-            arg[self.layers[0]['z']] = series_batch_padded.reshape((len(x), n_timestep, -1))
+                series_batch_padded = np.array(
+                    [np.pad(sb, ((0, n_timestep - len(sb)), (0, 0)), 'constant', constant_values=0) for sb in
+                     series_batch])
 
-            if layer_index == -1:
-                p = self.session.run(self.__outputs, feed_dict=arg)
-                for i in range(len(self.__outputs)):
-                    out_p = []
-                    for j in range(len(samp_timestep)):
-                        out_p.append(np.array(p[i][j])[:samp_timestep[j]])
-                    pred.append(np.array(out_p))
-            else:
-                p = self.session.run(self.get_layer(layer_index)['h'], feed_dict=arg)
+                arg[self.layers[0]['z']] = series_batch_padded.reshape((len(xb), n_timestep, -1))
 
-                # print(du.ndims(p))
-                # pp = p
-                # for nd in range(du.ndims(p)):
-                #     print(len(pp))
-                #     pp = pp[0]
-                #
-                # print(len(samp_timestep))
+                if layer_index == -1:
+                    p = self.session.run(self.__outputs, feed_dict=arg)
+                else:
+                    p = [self.session.run(self.get_layer(layer_index)['h'], feed_dict=arg)]
 
-                # print(p)
+                n_out = 1
+                if layer_index == -1:
+                    n_out = len(self.__outputs)
 
-                out_p = []
-                for j in range(len(samp_timestep)):
-                    out_p.append(np.array(p[j])[:samp_timestep[j]])
-
-                pred.append(np.array(out_p))
-
+                if pred is None:
+                    pred = []
+                    for i in range(n_out):
+                        out_p = []
+                        for j in range(len(samp_timestep)):
+                            out_p.append(np.array(p[i][j])[:samp_timestep[j]])
+                        pred.append(np.array(out_p))
+                else:
+                    for i in range(len(self.__outputs)):
+                        out_p = []
+                        for j in range(len(samp_timestep)):
+                            out_p.append(np.array(p[i][j])[:samp_timestep[j]])
+                        pred[i] = np.append(pred[i], np.array(out_p))
             return pred
         else:
-            arg[self.layers[0]['z']] = x
-            if layer_index == -1:
-                out = self.session.run(self.__outputs, feed_dict=arg)
-            else:
-                out = self.session.run(self.get_layer(layer_index)['h'], feed_dict=arg)
-            return [flatten_sequence(a) for a in out]
+            out_p = None
+            for b in range(0, x.shape[0], batch):
+                s = np.array(range(b, min(x.shape[0], b + batch)))
+                arg[self.layers[0]['z']] = x[s]
+                if layer_index == -1:
+                    out = self.session.run(self.__outputs, feed_dict=arg)
+                else:
+                    out = self.session.run(self.get_layer(layer_index)['h'], feed_dict=arg)
+
+                if out_p is None:
+                    out_p = out
+                else:
+                    out_p = np.append(out_p, out)
+            return [flatten_sequence(a) for a in out_p]
 
     def get_cost(self, x, y, test=True):
 
@@ -1474,105 +1501,6 @@ class Network:
         return series
 
 
-@deprecated
-def loadData(x_file, y_file, x_stride=15, n=None):
-    x = []
-    y = []
-
-    with open(x_file, 'r') as xf, open(y_file, 'r') as yf:
-        seq = []
-        xf_lines = xf.readlines()
-        yf_lines = yf.readlines()
-        for line in range(len(xf_lines)):
-            if line == 0:
-                continue  # skip header
-            elif int((line / float(x_stride)) - 1) == n:
-                break
-
-            csv = xf_lines[line].strip().split(',')
-            for j in range(len(csv)):
-                try:
-                    seq.append(np.array([float(csv[j])]))
-                except ValueError:
-                    pass
-            if line % int(x_stride) == 0:
-                x.append(np.array(seq))
-                one_hot = np.zeros((2), dtype=float)
-                one_hot[int(yf_lines[int((line / float(x_stride)))].strip().split(',')[0])] = 1
-                y.append([int(yf_lines[int((line / float(x_stride)))].strip().split(',')[0])])
-                seq = []
-
-    return np.array(x), np.array(y)
-
-
-@deprecated
-def loadCSV(filename, max_rows=None):
-    csvarr = []
-    with open(filename, 'r') as f:
-        for line in f.readlines():
-            # split out each comma-separated value
-            name = line.strip().split(',')
-            for j in range(0, len(name)):
-                # try converting to a number, if not, leave it
-                try:
-                    name[j] = float(name[j])
-                except ValueError:
-                    # do nothing constructive
-                    name[j] = name[j]
-            csvarr.append(name)
-            if max_rows is not None:
-                if len(csvarr) >= max_rows:
-                    break
-    return csvarr
-
-
-@deprecated
-def writetoCSV(ar, filename, headers=[]):
-    # ar = np.array(transpose(ar))
-    ar = np.array(ar)
-    assert len(ar.shape) <= 2
-
-    with open(filename + '.csv', 'w') as f:
-        if len(headers) != 0:
-            for i in range(0, len(headers) - 1):
-                f.write(str(headers[i]) + ',')
-            f.write(str(headers[len(headers) - 1]) + '\n')
-        for i in range(0, len(ar)):
-            if (len(ar.shape) == 2):
-                for j in range(0, len(ar[i]) - 1):
-                    f.write(str(ar[i][j]) + ',')
-                f.write(str(ar[i][len(ar[i]) - 1]) + '\n')
-            else:
-                f.write(str(ar[i]) + '\n')
-    f.close()
-
-
-@deprecated
-def loadCSVwithHeaders(filename, max_rows=None):
-    if max_rows is not None:
-        max_rows += 1
-    data = loadCSV(filename, max_rows)
-    headers = np.array(data[0])
-    # data = np.array(convert_to_floats(data))
-    data = np.delete(data, 0, 0)
-    return data, headers
-
-
-@deprecated
-def readHeadersCSV(filename):
-    with open(filename, 'r') as f:
-        for line in f.readlines():
-            # split out each comma-separated value
-            return line.strip().split(',')
-    return []
-
-
-@deprecated
-def softmax(z):
-    t = np.exp(z - z.max())
-    return t / np.sum(t, axis=1, keepdims=True)
-
-
 def describe_network_structure(net):
 
     structure = dict()
@@ -1606,26 +1534,6 @@ def describe_network_structure(net):
     return structure
 
 
-def print_label_distribution(labels, label_names=None):
-    # TODO: rewrite with new structure
-    # TODO: move to datautility
-
-    print("\nLabel Distribution:")
-
-    n = np.sum(np.array(labels), axis=0)
-    dist = softmax(np.array([n / np.max(n)]))[0]
-
-    if label_names is not None:
-        assert len(label_names) == len(dist)
-    else:
-        label_names = []
-        for i in range(0, len(dist)):
-            label_names.append("Label_" + str(i))
-
-    for i in range(0, len(dist)):
-        print("   " + label_names[i] + ":", "{:<6}".format(int(n[i])), "({0:.0f}%)".format(dist[i] * 100))
-
-
 def flatten_sequence(sequence, key=None, identifier=None):
     # TODO: move to datautility
 
@@ -1644,13 +1552,17 @@ def flatten_sequence(sequence, key=None, identifier=None):
 
     try:  # try the simple case
         if key is not None:
-            ex_key = np.hstack([np.tile(key[i], len(np.array(seq[i]).ravel())) for i in range(len(seq))]).reshape(
+            # print(sum([len(np.array(seq[i])) for i in range(len(seq))]))
+            ex_key = np.hstack([np.tile(key[i], len(np.array(seq[i]))) for i in range(len(seq))]).reshape(
                 (-1, np.array(key).shape[1]))
             fl_seq = np.hstack([np.array(i).ravel() for i in seq]).reshape((-1, np.array(seq[0]).shape[1]))
 
             if identifier is None:
                 return np.append(ex_key, fl_seq, axis=1)
             else:
+                # print(ex_key.shape)
+                # print(id.shape)
+                # print(fl_seq.shape)
                 return np.append(np.append(id, ex_key, axis=1), fl_seq, axis=1)
 
         if identifier is None:
@@ -1658,7 +1570,7 @@ def flatten_sequence(sequence, key=None, identifier=None):
         else:
             return np.append(id, np.hstack([np.array(i).ravel() for i in seq]).reshape((-1, np.array(seq[0]).shape[1])),
                              axis=1)
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, TypeError):
         # try:
         ar = None
         ind = 0
@@ -1674,12 +1586,21 @@ def flatten_sequence(sequence, key=None, identifier=None):
                 row = np.append(row, np.hstack([np.array(j).ravel() for j in seq[i][t]]).reshape((ntime, -1)), 1)
 
             if key is not None:
-                ex_key = np.array(np.tile(key[i], len(seq[i][0]))).reshape((-1, len(key[i])))
+                # print(seq[i][0])
+                # print(seq[i])
+                # print(key[i])
+                # print(len(seq[i][0]))
+
+                ex_key = np.array(np.tile(key[i], len(seq[i][0]))).reshape((len(seq[i][0]), -1))
                 # print(ex_key)
                 # print(row)
+                # try:
+                #     row = np.append(ex_key, row, axis=1)
+                # except ValueError:
+                #     print(ex_key)
+                #     print(row)
 
                 row = np.append(ex_key, row, axis=1)
-
                 # print(row)
 
             if ar is None:
@@ -1884,7 +1805,7 @@ def reshape_sequence(table, pivot, labels=None, columns=None, order=None, verbos
 
 def format_sequence(table, pivot, labels=None, covariates=None, identifiers=None, order=None, verbose=True):
     # TODO: move to datautility
-
+    warn = False
     if covariates is None:
         covariates = range(table.shape[-1])
     col = np.array(covariates)
@@ -1946,19 +1867,23 @@ def format_sequence(table, pivot, labels=None, covariates=None, identifiers=None
             lex_order = []
             for j in range(len(order)):
                 ord_j = len(order)-1-j
-                lex_order.append(filtered_table[:, order[ord_j]])
+                try:
+                    lex_order.append(np.array(filtered_table[:, order[ord_j]],dtype=np.float32))
+                except ValueError:
+                    lex_order.append(filtered_table[:, order[ord_j]])
 
             ordering = np.lexsort(tuple(lex_order))
 
         # print(np.array(filtered_table[:, col.reshape((-1))], dtype=np.float32)[ordering].reshape((-1, len(col))))
         # exit(1)
         try:
-            x.append(np.array(filtered_table[:, col.reshape((-1))], dtype=np.float32)[ordering].reshape((-1, len(col))))
+            x.append(np.array(filtered_table[:, col.reshape((-1))], dtype=str)[ordering].reshape((-1, len(col))))
         except ValueError:
+            warn = True
             ft = np.array(filtered_table[:, col.reshape((-1))], dtype=str)
-            ft_shape = ft.shape
-            ft = pd.to_numeric(ft.ravel(),errors='coerce').reshape(ft_shape)
-            ft[np.isnan(ft)] = 0
+            # ft_shape = ft.shape
+            # ft = pd.to_numeric(ft.ravel(),errors='coerce').reshape(ft_shape)
+            # ft[np.isnan(ft)] = 0
             x.append(ft[ordering].reshape((-1, len(col))))
 
         if identifiers is not None:
@@ -1992,8 +1917,18 @@ def format_sequence(table, pivot, labels=None, covariates=None, identifiers=None
                     if is_str:
                         lab[ind] = np.full((len(match), len(col)), mlabel[0])
                     else:
-                        lab[ind] = np.array(filtered_table[:, np.array(mlabel, dtype=int).reshape((-1))],
-                                            dtype=np.float32)[ordering].reshape((-1, len(mlabel)))
+                        try:
+                            lab[ind] = np.array(filtered_table[:, np.array(mlabel, dtype=int).reshape((-1))],
+                                                dtype=np.float32)[ordering].reshape((-1, len(mlabel)))
+                        except ValueError:
+                            ftarr = filtered_table[:, np.array(mlabel, dtype=int).reshape((-1))]
+                            for fti in range(len(ftarr)):
+                                try:
+                                    _ = np.array(ftarr[fti],dtype=np.float32)
+                                except ValueError:
+                                    ftarr[fti] = 'nan'
+                            lab[ind] = np.array(ftarr,
+                                                dtype=np.float32)[ordering].reshape((-1, len(mlabel)))
                     ind += 1
 
         y.append(lab)
@@ -2017,10 +1952,20 @@ def format_sequence(table, pivot, labels=None, covariates=None, identifiers=None
     seq['y'] = np.array(y)
     seq['iden'] = np.array(id)
 
+    try:
+        for i in range(len(seq['x'])):
+            seq['x'][i] = np.array(seq['x'][i], dtype=np.float32)
+    except ValueError:
+        pass
+
+    if verbose and warn:
+        print('-- WARNING: String type found during sequence formatting')
+
     return seq
 
 
-def format_sequence_from_file(filename, pivot, labels=None, covariates=None, identifiers=None, order=None, verbose=True):
+def format_sequence_from_file(filename, pivot, labels=None, covariates=None, identifiers=None, order=None,
+                              verbose=True, header=True):
     if not os.path.exists('temp/'):
         os.makedirs('temp/')
     tmp_filename = 'temp/tmp_data.csv'
@@ -2052,13 +1997,13 @@ def format_sequence_from_file(filename, pivot, labels=None, covariates=None, ide
         f_lines = csv.reader(f)
 
         if verbose:
-            output_str = '-- loading {}...({}%)'.format(filename, 0)
+            output_str = '-- formatting sequence...({}%)'.format(0)
             sys.stdout.write(output_str)
             sys.stdout.flush()
             old_str = output_str
         i = 0
         for line in f_lines:
-            if i == 0 or len(line) == 0:
+            if (header and i == 0) or len(line) == 0:
                 i += 1
                 continue
             elif i % 2048 == 0:
@@ -2081,11 +2026,46 @@ def format_sequence_from_file(filename, pivot, labels=None, covariates=None, ide
                     fs = format_sequence(ar, pivot, labels, covariates, identifiers, order, False)
 
                     if seq is None:
-                        seq = fs
-                    else:
-                        for k in seq.keys():
+                        seq = dict()
+                        for k in fs.keys():
+                            seq[k] = []
 
-                            seq[k] = np.append(seq[k], fs[k], axis=0)
+                    # length = []
+                    # fslength = []
+                    for k in seq.keys():
+                        for fsk in fs[k]:
+                            seq[k].append(fsk)
+
+                        # length.append(len(seq[k]))
+                        # fslength.append(len(fs[k]))
+
+                    # print('{} {}'.format(length, fslength))
+                    # if np.mean(length) != length[0]:
+                    #     print(fs['x'])
+                    #     print(fs['x'].shape)
+                    #     exit(1)
+                    # else:
+                    #     length = []
+                    #     fslength = []
+                    #     for k in seq.keys():
+                    #
+                    #         try:
+                    #             seq[k] = np.append(seq[k], fs[k].tolist(), axis=0)
+                    #
+                    #         except ValueError:
+                    #             print(k)
+                    #             print(du.ndims(seq[k]))
+                    #             print(du.ndims(fs[k]))
+                    #             du.write_csv(flatten_sequence(seq['iden']),'resources/affect_obs/seqk.csv')
+                    #             du.write_csv(flatten_sequence(fs['iden']), 'resources/affect_obs/fsk.csv')
+                    #             seq[k] = np.append(seq[k], fs[k], axis=0)
+                    #             exit(1)
+                    #
+                    #     print('{} {}'.format(length,fslength))
+                    #     if np.mean(length) != length[0]:
+                    #         print(fs['x'])
+                    #         print(fs['x'].shape)
+                    #         exit(1)
 
                     csvarr = []
                     format_seq = False
@@ -2096,7 +2076,7 @@ def format_sequence_from_file(filename, pivot, labels=None, covariates=None, ide
 
             if verbose and not round((i / n_lines) * 100, 2) == round(((i - 1) / n_lines) * 100, 2):
                 sys.stdout.write('\r' + (' ' * len(old_str)))
-                output_str = '\r-- loading {}...({}%)'.format(filename, round((i / n_lines) * 100, 2))
+                output_str = '\r-- formatting sequence...({}%)'.format(round((i / n_lines) * 100, 2))
                 sys.stdout.write(output_str)
                 sys.stdout.flush()
                 old_str = output_str
@@ -2114,8 +2094,11 @@ def format_sequence_from_file(filename, pivot, labels=None, covariates=None, ide
 
         if verbose:
             sys.stdout.write('\r' + (' ' * len(old_str)))
-            sys.stdout.write('\r-- loading {}...({}%)\n'.format(filename, 100))
+            sys.stdout.write('\r-- formatting sequence...({}%)\n'.format(100))
             sys.stdout.flush()
+
+    for k in seq.keys():
+        seq[k] = np.array(seq[k])
 
     return seq
 
@@ -2296,35 +2279,6 @@ def stratified_fold_by_key(key_ar, key=0, folds=5, strata=None):
     return np.insert(kar, 0, np.array(generate_folds(
         np.array(['~'.join(np.array([i], dtype=str).ravel()) for i in kar[:, np.array([key]).ravel()]]).reshape((-1)),
         folds), dtype=str), axis=1)
-
-
-@deprecated
-def Aprime(actual, predicted):
-    assert len(actual) == len(predicted)
-
-    # print(actual[0:15])
-    #
-    # print(predicted[0:15])
-
-    score = [[], []]
-
-    for i in range(0, len(actual)):
-        # print(actual[i])
-        # print(predicted[i])
-        if not np.isnan(actual[i]):
-            score[int(actual[i])].append(predicted[i])
-
-    sum = 0.0
-    for p in score[1]:
-        for n in score[0]:
-            if p > n:
-                sum += 1
-            elif p == n:
-                sum += .5
-            else:
-                sum += 0
-
-    return sum / (float(len(score[0])) * len(score[1]))
 
 
 def fill_input_multi_label(sequence_y, sequence_x, network):
@@ -2622,6 +2576,66 @@ def offset_multi_label(sequence_y, labels, offset=1):
     return np.array(seq_y)
 
 
+def sequence_levenshtein(sequence_x, index=None):
+    import Levenshtein as lev
+    # if no index is given, replace all text features
+
+    flat_x = flatten_sequence(sequence_x[:200])
+    if index is None:
+        index = []
+        for i in range(len(sequence_x[0][0])):
+            if du.infer_if_string(flat_x[:,i]):
+                index.append(i)
+
+    if not hasattr(index, '__iter__'):
+        index = [index]
+
+    for i in range(len(sequence_x)):
+        for k in index:
+            sequence_x[i][0][k] = 0
+            for j in range(1,len(sequence_x[i])):
+                sequence_x[i][j][k] = lev.ratio(str(sequence_x[i][j][k]),str(sequence_x[i][j-1][k]))
+
+    return sequence_x
+
+
+def sequence_impute_missing(sequence_x, value=0):
+    for i in range(len(sequence_x)):
+        for k in range(len(sequence_x[i])):
+            arr = np.array(sequence_x[i][k], dtype=str)
+            if 'nan' in arr:
+                sequence_x[i][k][np.argwhere(arr == 'nan').ravel()] = value
+            elif '' in arr:
+                sequence_x[i][k][np.argwhere(arr == '').ravel()] = value
+            elif '.' in arr:
+                sequence_x[i][k][np.argwhere(arr == '.').ravel()] = value
+    return sequence_x
+
+
+def sequence_one_hot(sequence_x, index=None, class_list=None):
+    # if no index is given, replace all text features
+    flat_x = flatten_sequence(sequence_x[:200])
+    if index is None:
+        index = []
+        for i in range(len(sequence_x[0][0])):
+            if du.infer_if_string(flat_x[:,i]):
+                index.append(i)
+
+    if not hasattr(index, '__iter__'):
+        index = [index]
+
+    index.sort(reverse=True)
+    for k in index:
+        if class_list is None:
+            class_list = np.unique(flat_x[:, k])
+            # print(class_list)
+            # exit(1)
+        sequence_x = np.array(sequence_x).tolist()
+        for i in range(len(sequence_x)):
+            sequence_x[i] = np.array(du.one_hot(sequence_x[i], class_list, k, True))
+    return np.array(sequence_x)
+
+
 def describe_multi_label(sequence_y, print_description=False, print_descriptives=False):
     desc = dict()
 
@@ -2662,436 +2676,3 @@ def describe_multi_label(sequence_y, print_description=False, print_descriptives
         print("{:=<40}\n".format(''))
 
     return desc
-
-
-def offset_label_timestep(y, label=0):
-    result = np.array(y)
-
-    for s in range(len(result)):
-        for t in range(len(result[s][label]) - 1):
-            result[s][label][t] = result[s][label][t + 1]
-        result[s][label][-1] = np.ones_like(result[s][label][0]) * np.nan
-    return result
-
-
-def keep_only_last_label(y, label=0):
-    result = np.array(y)
-
-    for s in range(len(result)):
-        for t in range(len(result[s][label]) - 1):
-            result[s][label][t] = np.nan
-    return result
-
-
-def loadAndReshape(lb):
-    lb = np.array(lb)
-    label = []
-    lb_name = ''
-    for i in lb:
-        if i == 'npc':
-            label.append([106])
-        elif i == 'fa':
-            label.append([107])
-        elif i == 'ws':
-            label.append([100])
-        elif i == 'rc':
-            label.append([101])
-        elif i == 'af':
-            label.append([102, 103, 104, 105])
-        else:
-            print('Wrong label.')
-            exit(1)
-
-        lb_name += ('_' if len(label) > 1 else '') + i
-
-    # lb_name += '_as'
-
-    # data, labels = du.read_csv('resources/mergedData_labeled.csv')
-    # du.print_descriptives(data,labels)
-
-    cov = list(range(3, 95))
-
-    load_csv_to_sequence('resources/mergedData_labeled.csv', [2], label, cov, lb_name)
-
-    # seq = format_data(data, [2, 96], label, cov, 1, True)
-    # seq = format_data(data, 1, [101, 102, 103, 104], list(range(4, 96)), 3, True) # affect (check columns)
-    # seq = format_data(data, 1, [[96], [101, 102, 103, 104]], list(range(4, 96)), 3, True) # multi-label (check columns)
-
-    # np.save('seq_k_' + lb_name + '.npy', seq['key'])
-    # np.save('seq_x_' + lb_name + '.npy', seq['x'])
-    # np.save('seq_y_' + lb_name + '.npy', seq['y'])
-
-    # flat = format_data(data, [2], [Network.NORMALIZED_INPUT], cov, 1, False)
-    # np.save('flat_k_' + lb_name + '.npy', flat['key'])
-    # np.save('flat_x_' + lb_name + '.npy', flat['x'])
-    # np.save('flat_y_' + lb_name + '.npy', flat['y'])
-
-
-def run_experiments(lb):
-    outputlabel = ''
-
-    lb = np.array(lb)
-    for i in lb:
-        outputlabel += ('_' if not outputlabel == '' else '') + i
-
-    # outputlabel += '_as'
-
-    max_epochs = 3
-    use_validation = True
-
-    hidden = [200]
-    batch = [32]
-    layers = [1]
-    keep = [.5]
-    step = [1e-2]
-    threshold = [0.0001]
-    optimizer = [Optimizer.ADAM]
-    AE = [False]
-    FC = [False]
-
-    headers = ['Hidden Nodes', 'Batch Size', 'Recurrent Layers', 'Keep Probability', 'Step Size', 'Threshold',
-               'Optimizer', 'Auto Encoder', 'Fully Connected Layer', 'AUC', 'AUC SD', 'RMSE', 'RMSE SD',
-               'Training Time']
-
-    seq = dict()
-    n_folds = 5
-
-    x = np.load('seq_x_' + outputlabel + '.npy')
-    y = np.load('seq_y_' + outputlabel + '.npy')
-    k = np.load('seq_k_' + outputlabel + '.npy')
-
-    print('seq_k_' + outputlabel + '.npy')
-
-    seq['x'] = np.array(x) [:100]
-    seq['y'] = np.array(y) [:100]
-    seq['key'] = np.array(k) [:100]
-
-    """
-    # prints the number of samples, label sets, and number of classes per label set (with averages)
-    # describes the label sets within seq['y'] (should print 5 label sets)
-    desc = describe_multi_label(seq['y'], True)
-
-    # extracts only the next problem correctness labels (1 class, binary value)
-    npc_labels = extract_from_multi_label(np.array(y), [0])
-
-    # extracts only the next first action labels (1 class, binary value)
-    nfa_labels = extract_from_multi_label(np.array(y), [1])
-
-    # extracts only the wheel spinning labels (1 class, binary value)
-    ws_labels = extract_from_multi_label(np.array(y), [2])
-
-    # extracts only the 1-week retention labels (1 class, binary value)
-    rt_labels = extract_from_multi_label(np.array(y), [3])
-
-    # extracts only the affect labels (4 classes, 1-hot encoded) 
-    af_labels = extract_from_multi_label(np.array(y), [4])
-
-    # extracts all labels except the affect labels (4 label sets, each with 1 class)
-    non_af_labels = extract_from_multi_label(np.array(y), [0,1,2,3])
-    """
-
-    subset = [0,1,2]
-    out_lb = np.array(outputlabel.split('_'))[subset]
-    seq['y'] = extract_from_multi_label(np.array(y), subset)
-
-    # flatk = np.load('flat_k_' + outputlabel + '.npy')
-    # flatx = np.load('flat_x_' + outputlabel + '.npy')
-    # flaty = np.load('flat_y_' + outputlabel + '.npy')
-
-    flat = dict()
-    flat['key'] = None # np.array(flatk)
-    flat['x'] = None # np.array(flatx)
-    flat['y'] = None # np.array(flaty)
-
-    desc = describe_multi_label(seq['y'], True)
-
-    # for i in range(len(out_lb)):
-    #     if out_lb[i] == 'npc' or out_lb[i] == 'fa':
-    #         seq['y'] = offset_label_timestep(seq['y'], i)
-    #     elif out_lb[i] == 'ws':
-    #         seq['y'] = keep_only_last_label(seq['y'], i)
-
-    output = []
-    best_perf = None
-
-    for o in optimizer:
-        for a in AE:
-            for f in FC:
-                for l in layers:
-                    for k in keep:
-                        for b in batch:
-                            for h in hidden:
-                                for s in step:
-                                    for t in threshold:
-                                        if a and f:
-                                            continue
-                                        start = time.time()
-                                        tf.set_random_seed(0)
-                                        np.random.seed(0)
-
-                                        fold = np.random.randint(0, n_folds, len(seq['x']))
-
-                                        lb_size = np.sum(desc['n_labels']) + np.sum(
-                                            [lbd > 1 for lbd in desc['n_labels']])
-                                        fold_auc = [[] for lb_set in range(lb_size)]
-                                        fold_rmse = [[] for lb_set in range(lb_size)]
-
-                                        training_series = None
-
-                                        pred_label = ['fold', 'predicted', 'actual']
-                                        model_pred = [[], [], []]
-
-                                        overall_pred = None
-
-                                        for i in range(n_folds):
-                                            tf.reset_default_graph()
-
-                                            training = np.argwhere(fold != i).ravel()
-                                            test_set = np.argwhere(fold == i).ravel()
-
-                                            ae = None
-                                            if a:
-                                                T = seq['key'][training]
-                                                aetraining = []
-                                                for tt in T:
-                                                    aetraining.extend(
-                                                        np.argwhere(
-                                                            np.array(flat['key'], dtype=str) == str(tt)).ravel())
-
-                                                ae = Network().add_input_layer(92, normalization=Normalization.NONE) \
-                                                    .add_dense_layer(46, activation=tf.nn.tanh) \
-                                                    .add_inverse_layer(layer_index=-1, activation=tf.identity)
-                                                ae.set_default_cost_method(Cost.MSE)
-                                                ae.set_optimizer(o)
-
-                                                hold = int(np.floor(len(aetraining) * .2)) if use_validation else 0
-
-                                                ae.train(x=flat['x'][training[hold:]], y=flat['y'][training[hold:]],
-                                                         step=0.0001,
-                                                         validation_data=flat['x'][
-                                                             aetraining[:hold]] if use_validation else None,
-                                                         validation_labels=flat['y'][
-                                                             aetraining[:hold]] if use_validation else None,
-                                                         max_epochs=max_epochs,
-                                                         threshold=t, batch=b)
-
-                                                net = Network(). \
-                                                    add_input_layer_from_network(ae,
-                                                                                 ae.get_deepest_hidden_layer_index())
-
-                                            else:
-                                                net = Network().add_input_layer(92, normalization=Normalization.NONE)
-
-                                            if f:
-                                                net.add_dense_layer(46, activation=tf.nn.tanh)
-
-                                            for _ in range(l):
-                                                net.add_lstm_layer(h, activation=tf.identity, peepholes=True)
-
-                                            net.begin_multi_output()
-                                            # net.add_dropout_layer(1, keep=k, activation=tf.nn.sigmoid)
-                                            for lab_set in desc['n_labels']:
-                                                activation = tf.nn.softmax if lab_set > 1 else tf.nn.sigmoid
-                                                net.add_dropout_layer(lab_set, keep=k, activation=activation)
-
-                                            # net.add_dropout_layer(4, keep=k, activation=tf.nn.softmax) # affect
-                                            net.end_multi_output()
-
-                                            net.set_default_cost_method(Cost.CROSS_ENTROPY)
-                                            net.set_optimizer(o)
-
-                                            net.train(x=seq['x'][training], y=seq['y'][training], step=s,
-                                                      use_validation=use_validation,
-                                                      max_epochs=max_epochs, threshold=t, batch=b)
-
-                                            # training_series = net.get_training_series()
-
-                                            # vu.plot_lines(training_series, save_file='last_fold.png', show=False)
-
-                                            pred = net.predict(x=seq['x'][test_set])
-
-                                            fold_pred = flatten_sequence(seq['y'][test_set])
-                                            fold_pred = np.append(np.ones((len(fold_pred), 1)) * i, fold_pred, axis=1)
-
-                                            for p in pred:
-                                                fold_pred = np.append(fold_pred, flatten_sequence(p), axis=1)
-
-                                            if overall_pred is None:
-                                                overall_pred = fold_pred
-                                            else:
-                                                overall_pred = np.append(overall_pred, fold_pred, axis=0)
-
-                                            du.write_csv(overall_pred, 'predictions.csv')
-
-                                            stride = np.sum(desc['n_labels'])
-                                            offset = 1
-                                            inc = 0
-                                            lb_inc = 0
-
-                                            print("{:=<40}\n".format(''))
-                                            for lab_set in desc['n_labels']:
-                                                lab_col = list(range(offset, offset + lab_set))
-
-                                                ls_auc = eu.auc(fold_pred[:, lab_col],
-                                                                fold_pred[:, list(lab_col + stride)], True)
-                                                print("Fold AUC (Label Set {}): {:<.3f}".format(inc, ls_auc))
-
-                                                fold_auc[lb_inc].append(ls_auc)
-                                                lb_inc += 1
-
-                                                if lab_set > 1:
-                                                    ls_iauc = eu.auc(fold_pred[:, lab_col],
-                                                                     fold_pred[:, list(lab_col + stride)], False)
-                                                    for iauc in range(len(ls_iauc)):
-                                                        print("  - Fold AUC (Label Set {}, Class {}): {:<.3f}"
-                                                              .format(inc, iauc, ls_iauc[iauc]))
-                                                        fold_auc[lb_inc].append(ls_iauc[iauc])
-                                                        lb_inc += 1
-
-                                                offset += lab_set
-                                                inc += 1
-                                            print("{:=<40}\n".format(''))
-
-                                            offset = 1
-                                            inc = 0
-                                            lb_inc = 0
-                                            print("{:=<40}\n".format(''))
-                                            for lab_set in desc['n_labels']:
-                                                lab_col = list(range(offset, offset + lab_set))
-
-                                                ls_rmse = eu.rmse(fold_pred[:, lab_col],
-                                                                  fold_pred[:, list(lab_col + stride)], True)
-
-                                                print("Fold RMSE (Label Set {}): {:<.3f}".format(inc, ls_rmse))
-
-                                                fold_rmse[lb_inc].append(ls_rmse)
-                                                lb_inc += 1
-
-                                                if lab_set > 1:
-                                                    ls_irmse = eu.rmse(fold_pred[:, lab_col],
-                                                                       fold_pred[:, list(lab_col + stride)], False)
-                                                    for irmse in range(len(ls_irmse)):
-                                                        print("  - Fold RMSE (Label Set {}, Class {}): {:<.3f}"
-                                                              .format(inc, irmse, ls_irmse[irmse]))
-                                                        fold_rmse[lb_inc].append(ls_irmse[irmse])
-                                                        lb_inc += 1
-
-                                                offset += lab_set
-                                                inc += 1
-                                            print("{:=<40}\n".format(''))
-
-                                            net.session.close()
-                                            if ae is not None:
-                                                ae.session.close()
-
-                                        # auc = np.mean(fold_auc)
-                                        # s_auc = np.std(fold_auc)
-                                        # rmse = np.mean(fold_rmse)
-                                        # s_rmse = np.std(fold_rmse)
-
-                                        inc = 0
-                                        print("{:=<40}\n".format(''))
-                                        for lab_set in desc['n_labels']:
-                                            print("Average AUC (Label Set {}): {:<.3f}".format(inc,
-                                                                                               np.nanmean(
-                                                                                                   fold_auc[inc])))
-
-                                            inc += 1
-                                            if lab_set > 1:
-                                                linc = inc
-                                                for iauc in range(lab_set):
-                                                    print("  - Average AUC (Label Set {}, Class {}): {:<.3f}"
-                                                          .format(linc, iauc, np.nanmean(fold_auc[inc])))
-                                                    inc += 1
-                                        print("{:=<40}".format(''))
-                                        inc = 0
-                                        print("{:=<40}\n".format(''))
-                                        for lab_set in desc['n_labels']:
-                                            print("Average RMSE (Label Set {}): {:<.3f}".format(inc,
-                                                                                                np.nanmean(
-                                                                                                    fold_rmse[inc])))
-
-                                            inc += 1
-                                            if lab_set > 1:
-                                                linc = inc
-                                                for irmse in range(lab_set):
-                                                    print("  - Average RMSE (Label Set {}, Class {}): {:<.3f}"
-                                                          .format(linc, irmse, np.nanmean(fold_rmse[inc])))
-                                                    inc += 1
-                                        print("{:=<40}".format(''))
-                                        print('Hidden Nodes = {}\n'
-                                              'Batch Size = {}\n'
-                                              'Recurrent Layers = {}\n'
-                                              'Keep Probability = {}\n'
-                                              'Step Size = {}\n'
-                                              'Threshold = {}\n'
-                                              'Optimizer = {}\n'
-                                              'Auto Encoder = {}\n'
-                                              'Fully Connected Layer = {}'.format(h, b, l, k, s, t, o, a, f))
-                                        print("{:=<40}".format(''))
-
-                                        #
-                                        # agg_perf = ((2.*(float(auc>.5)*auc))-1) + (1-rmse)
-                                        # if best_perf is None or (best_perf is not None and agg_perf > best_perf):
-                                        #     best_perf = agg_perf
-                                        #     vu.plot_lines(training_series, save_file='best_last_fold.png',show=False)
-                                        #
-                                        # output.append([h, b, l, k, s, t, o, a, f, auc, s_auc, rmse, s_rmse, time.time()-start])
-                                        # du.write_csv(output,'model_performance.csv',headers)
-
-
-if __name__ == "__main__":
-    # TODO: remove utility functions from here (file loading, etc) and redirect tests to use  datautility
-
-    net = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
-    net.add_bidirectional_lstm_layer(100, activation=tf.identity)
-
-    net.add_dropout_layer(50, keep=.5, activation=tf.nn.sigmoid)
-
-    net.add_inverse_layer(-1)
-
-    net2 = Network().add_input_layer_from_network(net,net.get_deepest_hidden_layer_index())
-    net2.add_dropout_layer(10, keep=.5, activation=tf.nn.sigmoid)
-
-    net2.begin_multi_output()
-
-    net2.add_dropout_layer(1, keep=.5, activation=tf.nn.sigmoid)
-    net2.add_dropout_layer(3, keep=.5, activation=tf.nn.sigmoid)
-    net2.add_dropout_layer(2, keep=.5, activation=tf.nn.sigmoid)
-    net2.add_dropout_layer(4, keep=.5, activation=tf.nn.sigmoid)
-
-    net2.end_multi_output()
-
-    net3 = Network().add_input_layer(92, normalization=Normalization.Z_SCORE)
-    net3.add_lstm_layer(100, activation=tf.identity)
-    net3.add_lstm_layer(100, as_decoder=True, activation=tf.identity)
-    net3.add_dropout_layer(92, keep=.5, activation=tf.nn.sigmoid)
-
-    # net.add_dropout_layer(4, keep=k, activation=tf.nn.softmax) # affect
-
-
-    describe_network_structure(net)
-
-    describe_network_structure(net2)
-
-    describe_network_structure(net3)
-    exit(1)
-
-
-    starttime = time.time()
-
-    lb = ['npc', 'fa', 'ws', 'rc', 'af']
-    hiddenUnits = 200
-    keepRate = 0.6
-    print('Label:', lb, 'HiddenUnits:', hiddenUnits)
-    from datetime import datetime
-
-    print(str(datetime.now()))
-    # loadAndReshape(lb)
-    # exit(1)
-    # run_npc_test(lb,hiddenUnits,keepRate)
-    run_experiments(lb)
-    print(str(datetime.now()))
-    endtime = time.time()
-    print('Label:', lb, 'HiddenUnits:', hiddenUnits)
-    print('Time cost: ', endtime - starttime)

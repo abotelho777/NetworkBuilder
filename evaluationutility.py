@@ -6,13 +6,10 @@ from skll.metrics import kappa as kpa
 def auc(actual, predicted, average_over_labels=True, partition=1024.):
     assert len(actual) == len(predicted)
 
-    ac = np.array(actual).reshape((len(actual),-1))
-    pr = np.array(predicted).reshape((len(predicted),-1))
+    ac = np.array(actual, dtype=np.float32).reshape((len(actual),-1))
+    pr = np.array(predicted, dtype=np.float32).reshape((len(predicted),-1))
 
     na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
-
-    if len(na) == 0:
-        return np.nan
 
     ac = ac[na]
     pr = pr[na]
@@ -109,8 +106,8 @@ def rmse(actual, predicted, average_over_labels=True):
 def cohen_kappa(actual, predicted, split=0.5, average_over_labels=True):
     assert len(actual) == len(predicted)
 
-    ac = np.array(actual).reshape((len(actual), -1))
-    pr = np.array(predicted).reshape((len(predicted), -1))
+    ac = np.array(actual,dtype=np.float32).reshape((len(actual), -1))
+    pr = np.array(predicted,dtype=np.float32).reshape((len(predicted), -1))
 
     na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
 
@@ -139,10 +136,17 @@ def cohen_kappa(actual, predicted, split=0.5, average_over_labels=True):
 def cohen_kappa_multiclass(actual, predicted):
     assert len(actual) == len(predicted)
 
-    ac = np.array(actual).reshape((len(actual), -1))
-    pr = np.array(predicted).reshape((len(predicted), -1))
+    ac = np.array(actual,dtype=np.float32).reshape((len(actual), -1))
+    pr = np.array(predicted,dtype=np.float32).reshape((len(predicted), -1))
 
-    na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
+    try:
+        na = np.argwhere([not np.any(np.isnan(i)) for i in ac]).ravel()
+    except:
+        for i in ac:
+            print(i)
+
+        for i in ac:
+            print(np.any(np.isnan(i)))
 
     if len(na) == 0:
         return np.nan

@@ -7,6 +7,7 @@ import warnings
 import csv
 import warnings
 import functools
+import Levenshtein as lev
 
 def deprecated(func):
     """This is a decorator which can be used to mark functions
@@ -63,6 +64,8 @@ def read_text_file(filename, sep=None, ignore='--'):
 
     with open(filename, 'r', errors='replace') as f:
         info = np.array(f.readlines())
+
+        info[0] = str(info[0]).replace('ï»¿', '')
 
         if ignore is not None:
             info = [i.strip() for i in
@@ -264,17 +267,22 @@ def nan_omit(ar):
     return ar
 
 
-def one_hot(ar, class_array, class_column):
+def one_hot(ar, class_array, class_column, replace=False):
     npar = np.array(ar)
 
     classes = class_array
 
     enc = np.zeros(shape=(len(ar), len(classes)), dtype=np.float32)
+    str('asdf').lower()
 
     for i in range(len(npar)):
-        enc[i, np.argwhere(np.array(classes[:], dtype=str) == str(npar[i, class_column])).ravel()] = 1
+        enc[i,
+            np.argwhere(np.array([str(c).lower() for c in classes]) == str(npar[i, class_column]).lower()).ravel()] = 1
     for i in range(len(classes)):
         npar = np.insert(npar, len(npar[0,:]), values=enc[:, i], axis=1)
+
+    if replace:
+        return np.delete(npar,class_column,axis=1)
 
     return npar
 
@@ -340,6 +348,77 @@ def cross_feature(class_array, feature_array, fill=0, distinct_classes=None, dis
     c_feature['class_label'] = np.array(c_feature['class_label'])
     c_feature['cross_feature'] = np.array(c_feature['cross_feature'])
     return c_feature
+
+
+def levenshtein_ratio(ar, text_column, grouping=None, order=None, replace=False):
+    table = np.array(ar)
+
+    if grouping is None:
+        grouping = table.shape[1]
+        table = np.append(table, np.ones((table.shape[0], 1)), axis=1)
+
+    if hasattr(grouping, '__iter__'):
+        pivot_ind = table.shape[1]
+        table = np.append(table, np.array(['~'.join(table[i, grouping]) for i in range(len(table))],
+                                          dtype=str).reshape((-1, 1)), 1)
+        pivot = pivot_ind
+    else:
+        pivot = grouping
+    try:
+        tbl_order = np.array(table[:, pivot], dtype=np.float32)
+    except ValueError:
+        tbl_order = np.array(table[:, pivot], dtype=str)
+
+    _, piv = np.unique(tbl_order, return_index=True)
+    p = table[piv, pivot]
+
+    repl_col = text_column
+    if not replace:
+        repl_col = table.shape[1]
+        table = np.append(table,np.zeros((len(table),1)),axis=1)
+
+    for i in p:
+
+        match = np.argwhere(np.array(table[:, pivot]) == i).ravel()
+        filtered_table = table[match]
+
+        if order is None:
+            ordering = list(range(len(match)))
+        else:
+            if not hasattr(order, '__iter__'):
+                order = [order]
+
+            lex_order = []
+            for j in range(len(order)):
+                ord_j = len(order) - 1 - j
+                lex_order.append(filtered_table[:, order[ord_j]])
+
+            ordering = np.lexsort(tuple(lex_order))
+
+        if not hasattr(text_column, '__iter__'):
+            text_column = [text_column]
+
+        ftable = filtered_table[ordering]
+        lev_col = ftable.shape[1]
+        filtered_table = np.append(filtered_table,np.zeros((len(filtered_table),1)),axis=1)
+        for k in text_column:
+            for j in range(1, len(ftable)):
+                filtered_table[ordering[j],lev_col] = lev.ratio(str(filtered_table[ordering[j], k]),
+                                                                str(filtered_table[ordering[j-1], k]))
+        table[match, repl_col] = filtered_table[:,-1]
+
+    return np.delete(table,pivot,axis=1)
+
+    # classes = class_array
+    #
+    # enc = np.zeros(shape=(len(ar), len(classes)), dtype=np.float32)
+    #
+    # for i in range(len(npar)):
+    #     enc[i, np.argwhere(np.array(classes[:], dtype=str) == str(npar[i, class_column])).ravel()] = 1
+    # for i in range(len(classes)):
+    #     npar = np.insert(npar, len(npar[0,:]), values=enc[:, i], axis=1)
+    #
+    # return npar
 
 
 def print_descriptives(ar, headers=None, desc_level=1):
@@ -416,8 +495,14 @@ def db_query(db_object, query, arguments=None, return_column_names=False):
 
     if arguments is not None:
         for k in arguments:
-            query = query.replace(str(k), '\'' + str(arguments[k]) + '\'' if isinstance(arguments[k], str) else str(
-                arguments[k]))
+            if not isinstance(arguments[k],str) and hasattr(arguments[k], '__iter__'):
+
+
+
+                query = query.replace(str(k), ','.join(arguments[k]))
+            else:
+                query = query.replace(str(k), '\'' + str(arguments[k]) + '\'' if isinstance(arguments[k], str) else str(
+                    arguments[k]))
 
     cur = db_object.cursor()
     try:
@@ -901,6 +986,11 @@ class Transforms:
 
 
 if __name__ == "__main__":
+
+    data = [[0,1,2,'apple'],[0,1,1,'abble'],[1,1,1,'apple'],[1,1,2,'apple'],[0,2,1,'appge'],[0,2,2,'appple']]
+
+    print(levenshtein_ratio(data,3,[0,1],2))
+    exit(1)
 
     data, headers = read_csv('resources/DKT_test.csv')
     print_descriptives(data,headers)
